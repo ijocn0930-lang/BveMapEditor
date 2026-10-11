@@ -1,0 +1,33 @@
+﻿<Window x:Class="BveMapEditor.FontSettingsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:BveMapEditor"
+        mc:Ignorable="d"
+Title="フォント設定" Height="220" Width="350"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <TextBlock Text="フォントファミリ:" Grid.Row="0" Margin="0,0,0,5"/>
+        <ComboBox x:Name="FontFamilyComboBox" Grid.Row="1" Height="25" Margin="0,0,0,10"/>
+
+        <TextBlock Text="フォントサイズ:" Grid.Row="2" Margin="0,0,0,5"/>
+        <!-- ★ サイズ入力ボックスと上下ボタンを横並びにする StackPanel -->
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,10">
+            <TextBox x:Name="FontSizeTextBox" Height="25" Width="80" VerticalContentAlignment="Center" Margin="0,0,5,0"/>
+            <Button Content="＋" Width="30" Height="25" Click="FontZoomIn_Click" Margin="0,0,2,0" ToolTip="サイズを大きくする"/>
+            <Button Content="−" Width="30" Height="25" Click="FontZoomOut_Click" ToolTip="サイズを小さくする"/>
+        </StackPanel>
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="OK" IsDefault="True" Width="75" Height="25" Margin="0,0,10,0" Click="OkButton_Click"/>
+            <Button Content="キャンセル" IsCancel="True" Width="75" Height="25" Click="CancelButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

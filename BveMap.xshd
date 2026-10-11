@@ -1,0 +1,130 @@
+﻿<SyntaxDefinition name="BveMap" extensions=".txt" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+	<!-- 配色・スタイルの定義 -->
+	<Color name="Comment" foreground="#2E7D32" fontStyle="italic" />
+	<Color name="String" foreground="#D84315" />
+	<Color name="Number" foreground="#7B1FA2" />
+	<Color name="Keyword" foreground="#1976D2" />
+	<Color name="mKeyword1" foreground="#e18600" />
+	<Color name="BKeyword1" foreground="#0067a3" fontWeight="bold" fontStyle="italic" />
+	<Color name="CKeyword1" foreground="#3b008f" />
+	<Color name="DKeyword1" foreground="#076e0f" fontWeight="bold"/>
+	<Color name="EKeyword1" foreground="#00bfff" />
+
+	<RuleSet>
+		<!-- 1. コメント (// または # から行末まで) -->
+		<Span color="Comment" begin="//|#" />
+		<!-- 2. 文字列 ('...' または "...") -->
+		<Span color="String" multiline="false">
+			<Begin>'</Begin>
+			<End>'</End>
+		</Span>
+		<Span color="String" multiline="false">
+			<Begin>"</Begin>
+			<End>"</End>
+		</Span>
+
+		<!-- 3. 数値 -->
+		<Rule color="Number">
+			\b\d+(\.\d+)?\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bSound\.Load\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bStation\.Load\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bSound3D\.Load\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bSignal\.Load\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bStructure\.Load\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bSection\.SetSpeedLimit\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bTrain\.Add\b
+		</Rule>
+		<Rule color="DKeyword1">
+			\bSignal\.SpeedLimit\b
+		</Rule>
+		<!-- 4. 主要キーワード -->
+		<Keywords color="Keyword">
+			<Word>Structure</Word>
+			<Word>Track</Word>
+			<Word>Signal</Word>
+			<Word>Background</Word>
+			<Word>Curve</Word>
+			<Word>Gradient</Word>
+			<Word>SpeedLimit</Word>
+			<Word>PreTrain</Word>
+			<Word>Station</Word>
+			<Word>Section</Word>
+			<Word>CabIlluminance</Word>
+			<Word>Fog</Word>
+			<Word>Light</Word>
+			<Word>Repeater</Word>
+			<Word>Beacon</Word>
+			<Word>Adhesion</Word>
+			<Word>Sound</Word>
+			<Word>Sound3D</Word>
+			<Word>RollingNoise</Word>
+			<Word>FlangeNoise</Word>
+			<Word>JointNoise</Word>
+			<Word>DrawDistance</Word>
+			<Word>Irregularity</Word>
+			<Word>Train</Word>
+		</Keywords>
+		<Keywords color="mKeyword1">
+			<Word>Begin</Word>
+			<Word>Begin0</Word>
+			<Word>BeginNew</Word>
+			<Word>Put</Word>
+			<Word>Put0</Word>
+			<Word>SetGauge</Word>
+			<Word>SetCenter</Word>
+			<Word>SetFunction</Word>
+			<Word>X</Word>
+			<Word>Y</Word>
+			<Word>Interpolate</Word>
+			<Word>Position</Word>
+			<Word>Set</Word>
+			<Word>Load</Word>
+			<Word>BeginTransition</Word>
+			<Word>Change</Word>
+			<Word>Enable</Word>
+			<Word>Stop</Word>
+			<Word>BeginConst</Word>
+			<Word>BeginCircular</Word>
+			<Word>Gauge</Word>
+			<Word>Pass</Word>
+			<Word>Ambient</Word>
+			<Word>Diffuse</Word>
+			<Word>Direction</Word>
+			<Word>End</Word>
+			<Word>Play</Word>
+			<Word>Add</Word>
+			<Word>Diffuse</Word>
+			<Word>Direction</Word>
+			<Word>BeginConst</Word>
+			<Word>Center</Word>
+			<Word>PutBetween</Word>
+			<Word>Cant</Word>
+
+		</Keywords>
+		<Keywords color="EKeyword1">
+			<Word>Include</Word>
+			<Word>include</Word>
+		</Keywords>
+		<Keywords color="CKeyword1">
+			<Word>Include</Word>
+		</Keywords>
+		<Rule color="BKeyword1">
+			BveTs\s+Map\s+2.02
+		</Rule>
+
+	</RuleSet>
+</SyntaxDefinition>
