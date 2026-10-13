@@ -9,6 +9,7 @@
 	<Color name="CKeyword1" foreground="#3b008f" />
 	<Color name="DKeyword1" foreground="#076e0f" fontWeight="bold"/>
 	<Color name="EKeyword1" foreground="#00bfff" />
+	<Color name="FKeyword1" foreground="#696969" />
 
 	<RuleSet>
 		<!-- 1. コメント (// または # から行末まで) -->
@@ -122,6 +123,10 @@
 		<Keywords color="CKeyword1">
 			<Word>Include</Word>
 		</Keywords>
+		<Keywords color="FKeyword1">
+			<Word>BveEx</Word><!--テキストエディタ非対応-->
+		</Keywords>
+
 		<Rule color="BKeyword1">
 			BveTs\s+Map\s+2.02
 		</Rule>

@@ -1,7 +1,9 @@
-﻿using ICSharpCode.AvalonEdit.CodeCompletion;
+﻿using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.CodeCompletion;
 using ICSharpCode.AvalonEdit.Document;
 using Microsoft.Win32;
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -14,6 +16,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.TextBox;
 
 namespace BveMapEditor
 {
@@ -22,6 +25,7 @@ namespace BveMapEditor
     /// </summary>
     public partial class MainWindow : Window
     {
+        private string _copiedFilePath = string.Empty;
         // MainWindow クラス内、または適当なヘルパー領域に追加してください
         #region アイコン取得用のWin32API定義
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
@@ -43,6 +47,8 @@ namespace BveMapEditor
         private const uint SHGFI_SMALLICON = 0x000000001; // 小さいアイコン（16x16）
         private const uint SHGFI_USEFILEATTRIBUTES = 0x000000010; // ファイルが存在しない場合でも拡張子から推測
 
+        private string _currentRootFolderPath = string.Empty;
+        private string _currentBveepFilePath = string.Empty; // 現在開いている .bveep ファイルのパス（上書き保
         // ファイルパスから WPF で使える ImageSource（アイコン）を取得するメソッド
         private static ImageSource? GetFileIcon(string filePath, bool isDirectory)
         {
@@ -94,10 +100,12 @@ namespace BveMapEditor
 
         // ファイル読み込み中フラグ（TextChangedの誤発火防止用）
         private bool isLoading = false;
-
+        //エクスプローラペイン自動更新
+        private FileSystemWatcher? _fileSystemWatcher;
         public MainWindow()
         {
             InitializeComponent();
+
             // ★ Undo/Redo の履歴状態が変化したときにメニューの有効/無効を更新するイベントを購読
             if (MapTextEditor.Document != null && MapTextEditor.Document.UndoStack != null)
             {
@@ -120,9 +128,31 @@ namespace BveMapEditor
                 MapTextEditor.Document.UndoStack.PropertyChanged += UndoStack_PropertyChanged;
             }
             UpdateEditMenuState();
+            // AvalonEdit は標準コマンド（Cut, Copy, Paste）をサポートしていますが、
+            // ウィンドウ全体で確実に機能させるためのバインディング設定例です
+            // ★ AvalonEditの機能にコマンドを直接ルーティングする
+            // ★ 選択範囲がないときは実行されない（あるいは何もしない）ように確実にガードする
+            // ★ エディタの選択範囲が変わったときのイベントを購読
+            MapTextEditor.TextArea.SelectionChanged += (s, e) =>
+            {
+                UpdateEditMenuState();
+            };
+            // ★ 現在行ハイライトレンダラーの組み込み
+            var highlightRenderer = new CurrentLineHighlightRenderer(MapTextEditor.TextArea);
+            MapTextEditor.TextArea.TextView.BackgroundRenderers.Add(highlightRenderer);
+
+            // カーソル位置が変わったときに再描画を走らせてハイライトを追従させる
+            MapTextEditor.TextArea.Caret.PositionChanged += (s, e) =>
+            {
+                MapTextEditor.TextArea.TextView.InvalidateVisual();
+            };
         }
-
-
+        // コマンドライン引数から渡された .bveep ファイルを起動時に読み込む用
+        public async Task LoadBveepFileFromCommandLineAsync(string filePath)
+        {
+            // すでに実装した LoadBveepFileAsync を呼び出して復元する
+            await LoadBveepFileAsync(filePath);
+        }
         // 同じ文字が連続しているかチェックする（例: "ss", "ee" など）
         private bool HasConsecutiveCharacters(string s)
         {
@@ -138,6 +168,187 @@ namespace BveMapEditor
             return false;
         }
         private CompletionWindow? completionWindow;
+
+        private string? GetSelectedPath()
+        {
+            if (FileExplorerTreeView.SelectedItem is TreeViewItem selectedItem && selectedItem.Tag is string path)
+            {
+                return path;
+            }
+            return null;
+        }
+        // ツリービューの項目を右クリックしたときに、自動でその項目を選択状態にする
+        private void TreeViewItem_MouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (sender is TreeViewItem item)
+            {
+                item.IsSelected = true;
+                // フォーカスを当ててコンテキストメニューが正しく対象を認識できるようにする
+                item.Focus();
+                // イベントが親に伝播して意図しない選択解除が起きるのを防ぐ場合
+                e.Handled = true;
+            }
+        }
+        // コンテキストメニューが開かれる直前に、ペインが空かどうかをチェックして制御する
+        private void FileExplorerTreeView_ContextMenuOpening(object sender, System.Windows.Controls.ContextMenuEventArgs e)
+        {
+            // エクスプローラーペインが空（またはルートフォルダが未設定）の場合
+            if (FileExplorerTreeView.Items.Count == 0 || string.IsNullOrEmpty(_currentRootFolderPath))
+            {
+                // メニューの表示自体を完全にキャンセルする（これでメニューが出なくなります）
+                e.Handled = true;
+            }
+            else
+            {
+                // 項目がある場合は通常通りメニューを許可
+                ExplorerContextMenu.IsEnabled = true;
+            }
+        }
+        private void MenuNewTextFile_Click(object sender, RoutedEventArgs e)
+        {
+            string? path = GetSelectedPath();
+            if (string.IsNullOrEmpty(path)) return;
+
+            // 選択されているのがファイルならその親フォルダ、フォルダならその中をターゲットにする
+            string targetDir = Directory.Exists(path) ? path : (Path.GetDirectoryName(path) ?? _currentRootFolderPath);
+            if (string.IsNullOrEmpty(targetDir)) return;
+
+            // 重複しないファイル名を生成 (例: 新しいテキスト文書.txt, 新しいテキスト文書 (1).txt)
+            string baseName = "新しいテキスト文書";
+            string ext = ".txt";
+            string newPath = Path.Combine(targetDir, baseName + ext);
+            int count = 1;
+
+            while (File.Exists(newPath))
+            {
+                newPath = Path.Combine(targetDir, $"{baseName} ({count}){ext}");
+                count++;
+            }
+
+            try
+            {
+                File.WriteAllText(newPath, string.Empty);
+                // FileSystemWatcher が有効なため、自動的にツリーが同期・更新されます
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"ファイルの作成に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        private void ExplorerPaneMenuRename_Click(object sender, RoutedEventArgs e)
+        {
+            string? path = GetSelectedPath();
+            if (string.IsNullOrEmpty(path) || path.Equals(_currentRootFolderPath, StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show("ルートフォルダや無効な項目は名前を変更できません。", "操作エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            bool isDir = Directory.Exists(path);
+            string currentName = Path.GetFileName(path);
+            string parentDir = Path.GetDirectoryName(path) ?? "";
+
+            // 入力ボックスを表示
+            string newName = Microsoft.VisualBasic.Interaction.InputBox("新しい名前を入力してください:", "名前の変更", currentName);
+            if (string.IsNullOrWhiteSpace(newName) || newName == currentName) return;
+
+            string newPath = Path.Combine(parentDir, newName);
+
+            try
+            {
+                if (isDir)
+                {
+                    Directory.Move(path, newPath);
+                }
+                else
+                {
+                    File.Move(path, newPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"名前の変更に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        private void ExplorerPaneMenuCopy_Click(object sender, RoutedEventArgs e)
+        {
+            string? path = GetSelectedPath();
+            if (!string.IsNullOrEmpty(path) && (File.Exists(path) || Directory.Exists(path)))
+            {
+                _copiedFilePath = path;
+            }
+        }
+
+        private void ExplorerPaneMenuPaste_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(_copiedFilePath) || (!File.Exists(_copiedFilePath) && !Directory.Exists(_copiedFilePath)))
+            {
+                MessageBox.Show("コピーされたファイルまたはフォルダが存在しません。", "エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            string? targetPath = GetSelectedPath();
+            if (string.IsNullOrEmpty(targetPath)) return;
+
+            string targetDir = Directory.Exists(targetPath) ? targetPath : (Path.GetDirectoryName(targetPath) ?? _currentRootFolderPath);
+            if (string.IsNullOrEmpty(targetDir)) return;
+
+            try
+            {
+                string fileName = Path.GetFileName(_copiedFilePath);
+                string destPath = Path.Combine(targetDir, fileName);
+
+                // 同名ファイル・フォルダが存在する場合は枝番を付与
+                int count = 1;
+                string destDirOnly = Path.GetDirectoryName(destPath) ?? targetDir;
+                string fileNameWithoutExt = Path.GetFileNameWithoutExtension(destPath);
+                string ext = Path.GetExtension(destPath);
+
+                while (File.Exists(destPath) || Directory.Exists(destPath))
+                {
+                    if (Directory.Exists(_copiedFilePath))
+                    {
+                        destPath = Path.Combine(destDirOnly, $"{fileName} ({count})");
+                    }
+                    else
+                    {
+                        destPath = Path.Combine(destDirOnly, $"{fileNameWithoutExt} ({count}){ext}");
+                    }
+                    count++;
+                }
+
+                if (Directory.Exists(_copiedFilePath))
+                {
+                    CopyDirectoryRecursive(_copiedFilePath, destPath);
+                }
+                else
+                {
+                    File.Copy(_copiedFilePath, destPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"貼り付けに失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // フォルダを丸ごとコピーするための再帰ヘルパー
+        private void CopyDirectoryRecursive(string sourceDir, string destDir)
+        {
+            Directory.CreateDirectory(destDir);
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                string destFile = Path.Combine(destDir, Path.GetFileName(file));
+                File.Copy(file, destFile);
+            }
+            foreach (var subDir in Directory.GetDirectories(sourceDir))
+            {
+                string destSubDir = Path.Combine(destDir, Path.GetFileName(subDir));
+                CopyDirectoryRecursive(subDir, destSubDir);
+            }
+        }
+
+
         // テキストが入力される直前
         private void MapTextEditor_TextEntering(object sender, System.Windows.Input.TextCompositionEventArgs e)
         {
@@ -160,11 +371,41 @@ namespace BveMapEditor
                  // テキストが入力された直後
         private void MapTextEditor_TextEntered(object sender, System.Windows.Input.TextCompositionEventArgs e)
         {
-            // ★ 自動補完が無効な場合は何もしない
+            // 1. 閉じ括弧の自動挿入処理（「AutoCompleteBrackets」設定でのみ制御する）
+            if (currentSettings.AutoCompleteBrackets && (e.Text == "(" || e.Text == "["))
+            {
+                int caretOffset = MapTextEditor.CaretOffset;
+
+                // 【安全装置】直前の文字をチェックし、連続または混合している場合は自動補完しない
+                if (caretOffset > 1)
+                {
+                    char prevChar = MapTextEditor.Document.GetCharAt(caretOffset - 2); // 新しく入力された文字の直前の文字
+
+                    // 直前の文字も括弧（'('、')'、'['、']'）である場合
+                    if (prevChar == '(' || prevChar == ')' || prevChar == '[' || prevChar == ']')
+                    {
+                        goto SkipBracketInsertion; // 連続・混合している場合はスキップ
+                    }
+                }
+
+                // 対応する閉じ括弧を決める
+                char closeChar = (e.Text == "(") ? ')' : ']';
+
+                // 閉じ括弧を自動挿入する
+                MapTextEditor.Document.Insert(caretOffset, closeChar.ToString());
+
+                // カーソルを元の位置（開き括弧と閉じ括弧の間）に戻す
+                MapTextEditor.CaretOffset = caretOffset;
+            }
+
+        SkipBracketInsertion:
+
+            // 2. 全体の自動補完機能（ポップアップ）が無効な場合はここで終了
             if (!currentSettings.EnableAutoCompletion)
             {
                 return;
             }
+
             // ★ 数字、またはピリオドが入力された場合は補完を開かない（開いている場合は閉じる）
             if (e.Text.Length > 0 && (char.IsDigit(e.Text[0]) || e.Text == "."))
             {
@@ -175,7 +416,9 @@ namespace BveMapEditor
                 }
                 return;
             }
+
             string currentWord = GetCurrentWordUnderCaret();
+
             // ★ すでに補完ウィンドウが開いている最中に、同じ文字が連続するようになったら閉じる
             if (completionWindow != null)
             {
@@ -186,6 +429,7 @@ namespace BveMapEditor
                 }
                 return;
             }
+
             // '.' が入力された、またはアルファベットが入力されたタイミング
             if (e.Text.Length > 0 && char.IsLetter(e.Text[0]))
             {
@@ -193,8 +437,10 @@ namespace BveMapEditor
                 {
                     return;
                 }
-                // ★ 外部のプロバイダからマスターリストを取得する
+
+                // 外部のプロバイダからマスターリストを取得する
                 var allItems = BveSyntaxProvider.GetAllSyntaxes().ToArray();
+
                 // プレフィックスに一致する候補だけに絞り込む（前方一致）
                 var filteredItems = allItems;
                 if (!string.IsNullOrEmpty(currentWord))
@@ -210,27 +456,24 @@ namespace BveMapEditor
                 }
 
                 completionWindow = new CompletionWindow(MapTextEditor.TextArea);
-                // ★ エディタの現在のフォントサイズを自動補完ウィンドウにも反映する
                 completionWindow.FontSize = MapTextEditor.FontSize;
-                completionWindow.FontFamily = MapTextEditor.FontFamily; // ついでにフォントファミリも統一
-                // ★ フォントサイズに応じてポップアップウィンドウの幅を動的に広げ、はみ出しを防ぐ
-                // デフォルトのままだと幅が狭いため、フォントサイズ（例: 14〜72）に合わせて幅を計算・調整します
+                completionWindow.FontFamily = MapTextEditor.FontFamily;
+
                 double estimatedWidth = Math.Max(250, MapTextEditor.FontSize * 18);
                 completionWindow.Width = estimatedWidth;
-
-                // 必要に応じてウィンドウ自体の高さの制限やレイアウト調整も可能
                 completionWindow.MaxHeight = 300;
-                var data = completionWindow.CompletionList.CompletionData;
 
+                var data = completionWindow.CompletionList.CompletionData;
                 foreach (var item in filteredItems)
                 {
                     data.Add(item);
                 }
-                // ★ 候補が1件以上ある場合、1番目の項目オブジェクトを直接指定して選択状態にする
+
                 if (filteredItems.Length > 0)
                 {
                     completionWindow.CompletionList.SelectedItem = filteredItems[0];
                 }
+
                 completionWindow.Show();
 
                 completionWindow.Closed += (o, args) =>
@@ -239,7 +482,6 @@ namespace BveMapEditor
                 };
             }
         }
-
         // ★ キャレットの手前にある現在の単語（入力中の文字列）を取得するヘルパーメソッド
         private string GetCurrentWordUnderCaret()
         {
@@ -351,6 +593,49 @@ namespace BveMapEditor
                 MenuUndo.IsEnabled = false;
                 MenuRedo.IsEnabled = false;
             }
+            bool hasSelection = MapTextEditor?.SelectionLength > 0;
+
+            if (MenuCut != null) MenuCut.IsEnabled = hasSelection;
+            if (MenuCopy != null) MenuCopy.IsEnabled = hasSelection;
+
+            // 貼り付けはクリップボードにテキストがある場合のみ有効にする
+            if (MenuPaste != null) MenuPaste.IsEnabled = Clipboard.ContainsText();
+        }
+        // 切り取りメニューがクリックされたとき
+        private void MenuCut_Click(object sender, RoutedEventArgs e)
+        {
+            if (MapTextEditor.SelectionLength > 0)
+            {
+                MapTextEditor.Cut();
+            }
+        }
+
+        // コピーメニューがクリックされたとき
+        private void MenuCopy_Click(object sender, RoutedEventArgs e)
+        {
+            if (MapTextEditor.SelectionLength > 0)
+            {
+                MapTextEditor.Copy();
+            }
+        }
+
+        // 貼り付けメニューがクリックされたとき
+        private void MenuPaste_Click(object sender, RoutedEventArgs e)
+        {
+            MapTextEditor.Paste();
+        }
+        // すべて選択メニューがクリックされたとき
+        private void MenuSelectAll_Click(object sender, RoutedEventArgs e)
+        {
+            MapTextEditor.SelectAll();
+        }
+        private void MenuSearch_Click(object sender, RoutedEventArgs e)
+        {
+            var searchWindow = new SearchWindow(MapTextEditor, currentSettings)
+            {
+                Owner = this
+            };
+            searchWindow.Show();
         }
         // テキスト変更時のイベント
         private void MapTextEditor_TextChanged(object sender, EventArgs e)
@@ -459,6 +744,46 @@ namespace BveMapEditor
         // 開く (Ctrl+O)
         private void MenuOpen_Click(object sender, ExecutedRoutedEventArgs e)
         {
+            // 1. 未保存の変更（isModified）がある場合の警告
+            if (isModified)
+            {
+                var result = MessageBox.Show(
+                    "編集中の内容に変更が保存されていません。\n" +
+                    "保存せずに新しいファイルを開きますか？",
+                    "未保存の変更の確認 - BveMapEditor",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.No)
+                {
+                    return; // 「いいえ」が選ばれた場合は開く処理を中断
+                }
+            }
+            // 2. ErrorListDataGrid にエラーが残っている場合の警告
+            bool hasErrors = false;
+            if (ErrorListDataGrid.ItemsSource is System.Collections.IEnumerable items)
+            {
+                foreach (var item in items)
+                {
+                    hasErrors = true;
+                    break;
+                }
+            }
+
+            if (hasErrors)
+            {
+                var result = MessageBox.Show(
+                    "現在の画面（エラー一覧）にエラーやメッセージが残っています。\n" +
+                    "別のファイルを開くと現在の編集内容やエラー情報は破棄されますが、よろしいですか？",
+                    "エラー残存の確認 - BveMapEditor",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.No)
+                {
+                    return; // 「いいえ」が選ばれた場合は開く処理を中断
+                }
+            }
             var openFileDialog = new OpenFileDialog
             {
                 Filter = "Map File (*.txt)|*.txt|All Files (*.*)|*.*",
@@ -516,6 +841,7 @@ namespace BveMapEditor
         // フォルダを開く
         private async void MenuOpenFolder_Click(object sender, RoutedEventArgs e)
         {
+
             var openFolderDialog = new OpenFolderDialog
             {
                 Title = "プロジェクトフォルダを開く"
@@ -524,7 +850,10 @@ namespace BveMapEditor
             if (openFolderDialog.ShowDialog() == true)
             {
                 string folderPath = openFolderDialog.FolderName;
-
+                _currentRootFolderPath = openFolderDialog.FolderName;
+                _currentBveepFilePath = string.Empty; // 新規フォルダを開いたときはパスをリセット
+                                                      // ★ここでファイル監視をスタートする
+                SetupFileSystemWatcher(folderPath);
                 // 1. 読み込み中ウィンドウを表示
                 var loadingWindow = new LoadingWindow
                 {
@@ -770,50 +1099,394 @@ namespace BveMapEditor
                     MessageBoxImage.Warning);
                 return null;
             }
-        
+
 
             return directoryItem;
         }
 
         // ツリービューの項目選択変更イベント
-        private void FileExplorerTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+        private void FileExplorerTreeView_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
+            // ダブルクリックされたアイテムを取得
             if (FileExplorerTreeView.SelectedItem is TreeViewItem selectedItem && selectedItem.Tag is string path)
             {
-                // 選択されたパスがファイルであれば開く
                 if (File.Exists(path))
                 {
-                    // ① 拡張子が .txt 以外の場合は警告を表示して中止する
-                    string extension = Path.GetExtension(path);
-                    if (!string.Equals(extension, ".txt", StringComparison.OrdinalIgnoreCase))
-                    {
-                        MessageBox.Show(
-                            "テキストファイル（.txt）以外のファイルを開くことはできません。",
-                            "対応していないファイル形式",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
-                        return;
-                    }
-                    // 未保存の変更がある場合は確認ダイアログ
-                    if (isModified)
-                    {
-                        var result = MessageBox.Show(
-                            "現在の変更が保存されていません。別のファイルを開きますか？",
-                            "確認",
-                            MessageBoxButton.YesNo,
-                            MessageBoxImage.Warning);
+                    // ファイルの場合はエディタで開く処理を実行
+                    OpenFileInEditor(path);
 
-                        if (result == MessageBoxResult.No)
-                        {
-                            return;
-                        }
-                    }
-
-                    OpenFile(path);
+                    // イベントが親にバブリングするのを防ぐ
+                    e.Handled = true;
                 }
             }
         }
+        // ファイルを実際にエディタで開くメソッド（既存のファイルオープン処理をここにまとめる）
+        private void OpenFileInEditor(string filePath)
+        {
+            try
+            {
+                // すでに実装されているファイル読み込み・エディタ表示処理をここに呼び出します
+                // 例: LoadFileToEditor(filePath);
+                OpenFile(filePath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"ファイルを開けませんでした:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        private void FileExplorerTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+        {
 
+        }
+
+        private void SaveBveepFile(string filePath)
+        {
+            try
+            {
+                var lines = new List<string>
+        {
+            "BVEEDITEXPLORER_PANEDATA_10", // 1行目: ヘッダーとバージョン
+            $"CurrentDirectory = {_currentRootFolderPath}" // 2行目: カレントディレクトリ
+        };
+
+                // 3行目: 選択中のファイル
+                string selectedPath = string.Empty;
+                if (FileExplorerTreeView.SelectedItem is TreeViewItem selectedItem && selectedItem.Tag is string path)
+                {
+                    selectedPath = path;
+                }
+                lines.Add($"Selected = {selectedPath}");
+
+                // 4行目以降: ツリーの状態（展開されているフォルダ、およびファイル）を再帰的に収集
+                foreach (var item in FileExplorerTreeView.Items)
+                {
+                    if (item is TreeViewItem rootTreeItem)
+                    {
+                        CollectTreeState(rootTreeItem, _currentRootFolderPath, lines);
+                    }
+                }
+
+                File.WriteAllLines(filePath, lines, Encoding.UTF8);
+                _currentBveepFilePath = filePath;
+                MessageBox.Show("エクスプローラーペインの設定を保存しました。", "保存完了", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                MessageBox.Show($"アクセス拒否されました。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (IOException ex)
+            {
+                MessageBox.Show($"保存中にI/Oエラーが発生しました。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"保存中に予期しないエラーが発生しました。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // ツリーを再帰的に走査して Folder と File を収集するヘルパー
+        private void CollectTreeState(TreeViewItem treeItem, string rootPath, List<string> lines)
+        {
+            if (treeItem.Tag is not string fullPath) return;
+            if (fullPath.Equals(rootPath, StringComparison.OrdinalIgnoreCase))
+            {
+                // ルート自体の場合は子を走査
+                foreach (var subItem in treeItem.Items)
+                {
+                    if (subItem is TreeViewItem child) CollectTreeState(child, rootPath, lines);
+                }
+                return;
+            }
+
+            // 相対パスを計算
+            string relativePath = Path.GetRelativePath(rootPath, fullPath);
+
+            if (Directory.Exists(fullPath))
+            {
+                // フォルダの場合
+                lines.Add($"Folder = {relativePath}");
+
+                // 展開されている場合のみ、子要素も再帰的に記録
+                if (treeItem.IsExpanded)
+                {
+                    foreach (var subItem in treeItem.Items)
+                    {
+                        if (subItem is TreeViewItem child) CollectTreeState(child, rootPath, lines);
+                    }
+                }
+            }
+            else if (File.Exists(fullPath))
+            {
+                // ファイルの場合
+                lines.Add($"File = {relativePath}");
+            }
+        }
+
+
+        // メニュー：「名前を付けて保存」
+        private void MenuSaveAsBveep_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new SaveFileDialog
+            {
+                Title = "エクスプローラーペイン設定を名前を付けて保存",
+                Filter = "BVE Explorer Pane (*.bveep)|*.bveep|All Files (*.*)|*.*",
+                DefaultExt = "bveep"
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                SaveBveepFile(dialog.FileName);
+            }
+        }
+
+        // メニュー：「開く (.bveep)」
+        private async void MenuOpenBveep_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new OpenFileDialog
+            {
+                Title = "エクスプローラーペイン設定を開く",
+                Filter = "BVE Explorer Pane (*.bveep)|*.bveep|All Files (*.*)|*.*"
+            };
+
+            if (dialog.ShowDialog() == true)
+            {
+                await LoadBveepFileAsync(dialog.FileName);
+            }
+        }
+
+        private async Task LoadBveepFileAsync(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                {
+                    MessageBox.Show("指定されたファイルが見つかりません。", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                string[] lines = await File.ReadAllLinesAsync(filePath, Encoding.UTF8);
+
+                // 1. ヘッダーバリデーション (1行目)
+                if (lines.Length == 0 || lines[0].Trim() != "BVEEDITEXPLORER_PANEDATA_10")
+                {
+                    MessageBox.Show("これは有効なエクスプローラーペイン設定ファイルではありません。", "形式エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                    FileExplorerTreeView.Items.Clear();
+                    return;
+                }
+
+                // 2. カレントディレクトリの読み込みとバリデーション (2行目)
+                string currentDir = string.Empty;
+                if (lines.Length > 1 && lines[1].StartsWith("CurrentDirectory ="))
+                {
+                    currentDir = lines[1]["CurrentDirectory =".Length..].Trim();
+                }
+
+                if (string.IsNullOrEmpty(currentDir) || !Directory.Exists(currentDir))
+                {
+                    MessageBox.Show("カレントディレクトリが存在しないか、指定されていません。", "アクセス/存在エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                    FileExplorerTreeView.Items.Clear();
+                    _currentRootFolderPath = string.Empty;
+                    // ★ここでファイル監視をスタートする
+                    SetupFileSystemWatcher(_currentRootFolderPath);
+                    return;
+                }
+
+                // アクセス権限チェック
+                try
+                {
+                    Directory.GetDirectories(currentDir);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    MessageBox.Show("カレントディレクトリへのアクセスが拒否されました。", "アクセス拒否", MessageBoxButton.OK, MessageBoxImage.Error);
+                    FileExplorerTreeView.Items.Clear();
+                    _currentRootFolderPath = string.Empty;
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"カレントディレクトリの確認中にエラーが発生しました。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                    FileExplorerTreeView.Items.Clear();
+                    _currentRootFolderPath = string.Empty;
+                    return;
+                }
+                _currentRootFolderPath = currentDir;
+                _currentBveepFilePath = filePath;
+
+                // 3. 選択状態の読み込み (3行目)
+                string selectedPath = string.Empty;
+                if (lines.Length > 2 && lines[2].StartsWith("Selected ="))
+                {
+                    selectedPath = lines[2]["Selected =".Length..].Trim();
+                }
+
+                // 4. 4行目以降の解析（重複チェック、ソート、存在チェック）
+                var rawEntries = new List<string>();
+                for (int i = 3; i < lines.Length; i++)
+                {
+                    string line = lines[i].Trim();
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        rawEntries.Add(line);
+                    }
+                }
+
+                // 4行目以降がない場合のリカバリー
+                if (rawEntries.Count == 0)
+                {
+                    MessageBox.Show("設定ファイルのツリー情報が見つからないため、カレントディレクトリの標準読み込みを行います。", "情報", MessageBoxButton.OK, MessageBoxImage.Information);
+                    // 通常のフォルダ読み込みを実行
+                    FileSystemNode? defaultRoot = await ScanDirectoryAsync(_currentRootFolderPath);
+                    if (defaultRoot != null)
+                    {
+                        LoadFileSystemToTreeView(defaultRoot);
+                    }
+                    return;
+                }
+
+                // 重複チェック
+                if (rawEntries.GroupBy(x => x).Any(g => g.Count() > 1))
+                {
+                    MessageBox.Show("設定ファイル内に重複したディレクトリまたはファイルのエントリが存在するため、読み込みを中止します。", "重複エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                    FileExplorerTreeView.Items.Clear();
+                    return;
+                }
+
+                // 大量のエントリ（ディレクトリ/ファイル）が存在する場合の警告 (例: 500件以上)
+                if (rawEntries.Count > 500)
+                {
+                    MessageBox.Show("設定ファイルに多数のディレクトリ/ファイルエントリが含まれています。読み込みに時間がかかる場合があります。", "確認", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+
+                // ランダム順の可能性があるためアルファベット順にソート
+                rawEntries.Sort(StringComparer.OrdinalIgnoreCase);
+
+                // ツリー構造を再構築するため、データを元にスキャン＆復元
+                FileSystemNode? rootNode = await ScanDirectoryAsync(_currentRootFolderPath);
+                if (rootNode != null)
+                {
+                    // 有効なエントリのみを元にフィルタリング・復元する処理
+                    LoadFileSystemToTreeView(rootNode);
+
+                    // 選択状態の復元（存在しない場合は警告なしで解除）
+                    if (!string.IsNullOrEmpty(selectedPath))
+                    {
+                        // 必要に応じて絶対パスに補正
+                        if (!Path.IsPathRooted(selectedPath))
+                        {
+                            selectedPath = Path.Combine(_currentRootFolderPath, selectedPath);
+                        }
+
+                        if (File.Exists(selectedPath))
+                        {
+                            // TreeViewItemから該当ファイルを選択状態にする処理をここに実装
+                            SelectTreeViewItemByPath(FileExplorerTreeView, selectedPath);
+                        }
+                    }
+                }
+            }
+            catch (OutOfMemoryException ex)
+            {
+                MessageBox.Show($"メモリが足りません。アプリケーションを終了します。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                Environment.Exit(1677216);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"設定ファイルの読み込み中にエラーが発生しました。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                FileExplorerTreeView.Items.Clear();
+            }
+        }
+
+        // パスを指定してTreeViewの該当アイテムを選択状態にするヘルパー
+        private bool SelectTreeViewItemByPath(ItemsControl container, string path)
+        {
+            foreach (var item in container.Items)
+            {
+                if (item is TreeViewItem treeItem && treeItem.Tag is string tagPath)
+                {
+                    if (tagPath.Equals(path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        treeItem.IsSelected = true;
+                        treeItem.BringIntoView();
+                        return true;
+                    }
+
+                    // 子階層も探索
+                    if (SelectTreeViewItemByPath(treeItem, path))
+                    {
+                        treeItem.IsExpanded = true;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        private void SetupFileSystemWatcher(string rootPath)
+        {
+            // 既存の監視があれば停止・破棄
+            if (_fileSystemWatcher != null)
+            {
+                _fileSystemWatcher.EnableRaisingEvents = false;
+                _fileSystemWatcher.Dispose();
+                _fileSystemWatcher = null;
+            }
+
+            if (string.IsNullOrEmpty(rootPath) || !Directory.Exists(rootPath)) return;
+
+            _fileSystemWatcher = new FileSystemWatcher(rootPath)
+            {
+                IncludeSubdirectories = true, // サブフォルダも含めてすべて監視
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite
+            };
+
+            // イベントハンドラの登録
+            _fileSystemWatcher.Created += OnFileSystemChanged;
+            _fileSystemWatcher.Deleted += OnFileSystemChanged;
+            _fileSystemWatcher.Renamed += OnFileSystemChanged;
+
+            // 監視を開始
+            _fileSystemWatcher.EnableRaisingEvents = true;
+        }
+
+        // ファイル変更検知時の処理（バックグラウンドスレッドから呼ばれるためDispatcherを使用）
+        private void OnFileSystemChanged(object sender, FileSystemEventArgs e)
+        {
+            // 連続した変更イベントが短時間に多発するのを防ぐ簡易的なディレイ（オプション）や
+            // UIスレッドへの安全なディスパッチ
+            Dispatcher.Invoke(async () =>
+            {
+                // 変更を検知したらツリーを再読み込みする
+                if (!string.IsNullOrEmpty(_currentRootFolderPath) && Directory.Exists(_currentRootFolderPath))
+                {
+                    // 現在の展開状態や選択状態を完全に保持したい場合は高度なマージが必要ですが、
+                    // まずは安全にツリー全体を再スキャンして同期させます
+                    FileSystemNode? rootNode = await ScanDirectoryAsync(_currentRootFolderPath);
+                    if (rootNode != null)
+                    {
+                        LoadFileSystemToTreeView(rootNode);
+                    }
+                }
+            });
+        }
+
+
+
+
+
+
+
+        // メニュー：「上書き保存」
+        private void MenuSaveBveep_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(_currentBveepFilePath))
+            {
+                MenuSaveAsBveep_Click(sender, e);
+            }
+            else
+            {
+                SaveBveepFile(_currentBveepFilePath);
+            }
+        }
         // 指定されたパスのファイルを開く実体処理
         private void OpenFile(string filePath)
         {
@@ -958,6 +1631,19 @@ namespace BveMapEditor
         // 上書き保存 (Ctrl+S)
         private void MenuSave_Click(object sender, ExecutedRoutedEventArgs e)
         {
+            // 1. 保存前に現在のテキストで構文チェックを走らせ、最新のエラー一覧を取得する
+            string mapText = MapTextEditor != null ? MapTextEditor.Text : string.Empty;
+            var errors = MapParser.Parse(mapText); // ※既存のパーサー呼び出しに合わせて調整してください
+
+            if (ErrorListDataGrid.ItemsSource is System.Collections.ICollection errorCollection && errorCollection.Count > 0)
+            {
+                var result = MessageBox.Show(
+                    $"構文エラーが {errorCollection.Count} 件存在します。このまま保存しますか？",
+                    "警告", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.No) return;
+            }
+
             if (string.IsNullOrEmpty(currentFilePath))
             {
                 // 新規ファイルの場合は「名前を付けて保存」へ誘導
@@ -977,6 +1663,19 @@ namespace BveMapEditor
         // 名前を付けて保存の実体処理
         private void SaveFileAs()
         {
+            // 1. 保存前に現在のテキストで構文チェックを走らせ、最新のエラー一覧を取得する
+            string mapText = MapTextEditor != null ? MapTextEditor.Text : string.Empty;
+            var errors = MapParser.Parse(mapText); // ※既存のパーサー呼び出しに合わせて調整してください
+
+            if (ErrorListDataGrid.ItemsSource is System.Collections.ICollection errorCollection && errorCollection.Count > 0)
+            {
+                var result = MessageBox.Show(
+                    $"構文エラーが {errorCollection.Count} 件存在します。このまま保存しますか？",
+                    "警告", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.No) return;
+            }
+
             var saveFileDialog = new SaveFileDialog
             {
                 Filter = "Map File (*.txt)|*.txt|All Files (*.*)|*.*",
@@ -992,6 +1691,7 @@ namespace BveMapEditor
         // ファイル書き込み処理
         private void SaveFile(string filePath)
         {
+
             try
             {
                 // AvalonEdit からテキストを取得
@@ -1057,6 +1757,20 @@ namespace BveMapEditor
         }
         private void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            // ★ 追加：開いたままの子ウィンドウ（SearchWindowなど）がないかチェックする
+            foreach (Window window in this.OwnedWindows)
+            {
+                if (window is SearchWindow)
+                {
+                    MessageBox.Show(this, "別のウィンドウを閉じられていません。別ウィンドウを閉じてからやり直してください。", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+
+                    // 必要であれば、開きっぱなしのウィンドウを手前にアクティブにする
+                    window.Activate();
+
+                    e.Cancel = true; // 終了をキャンセル
+                    return;
+                }
+            }
             if (isModified)
             {
                 var result = MessageBox.Show(
@@ -1086,7 +1800,9 @@ namespace BveMapEditor
                     e.Cancel = true;
                 }
                 // 「いいえ」が選ばれた場合はそのまま終了する
+                // ★ アプリケーション終了時に検索・置換の保持データを空にする
             }
+            _fileSystemWatcher?.Dispose();
         }
         // ウィンドウタイトルと中央ヘッダーの表示更新
         private void UpdateTitle()
@@ -1230,6 +1946,323 @@ namespace BveMapEditor
             if (MenuThemeLight != null) MenuThemeLight.IsChecked = (themeMode == "Light");
             if (MenuThemeDark != null) MenuThemeDark.IsChecked = (themeMode == "Dark");
         }
-    }
+        private void MenuDetailSettings_Click(object sender, RoutedEventArgs e)
+        {
+            var detailWindow = new DetailSettingsWindow(currentSettings)
+            {
+                Owner = this
+            };
 
+            if (detailWindow.ShowDialog() == true)
+            {
+                // 設定が変更されたら必要に応じてファイルを保存
+                currentSettings.Save();
+            }
+        }
+        private void MenuAbout_Click(object sender, RoutedEventArgs e)
+        {
+            var aboutWindow = new AboutWindow
+            {
+                Owner = this
+            };
+            aboutWindow.ShowDialog();
+        }
+        // BVE公式サイトを開く
+        private void MenuBveSite_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // BVE Trainsim の公式サイトURL
+                string url = "https://bvets.net/jp/";
+
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"ブラウザを開けませんでした: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+
+        private void MenuBveSiteGuide_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // BVE Trainsim の公式サイトURL
+                string url = "https://bvets.net/jp/edit/";
+
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"ブラウザを開けませんでした: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+        }
+
+        private void MenuBveformat_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // BVE Trainsim の公式サイトURL
+                string url = "https://bvets.net/jp/edit/formats/";
+
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"ブラウザを開けませんでした: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+
+
+        }
+
+        private async void MenuRefreshTree_Click(object sender, RoutedEventArgs e)
+        {
+            if (!string.IsNullOrEmpty(_currentRootFolderPath) && Directory.Exists(_currentRootFolderPath))
+            {
+                FileSystemNode? rootNode = await ScanDirectoryAsync(_currentRootFolderPath);
+                if (rootNode != null)
+                {
+                    LoadFileSystemToTreeView(rootNode);
+                }
+            }
+        }
+
+        private void MenuOpenInExplorer_Click(object sender, RoutedEventArgs e)
+        {
+            if (FileExplorerTreeView.SelectedItem is TreeViewItem selectedItem && selectedItem.Tag is string path)
+            {
+                try
+                {
+                    string targetPath = path;
+                    // ファイルの場合はその親フォルダ、フォルダの場合はそのフォルダを開く
+                    if (File.Exists(path))
+                    {
+                        targetPath = Path.GetDirectoryName(path) ?? path;
+                    }
+
+                    if (Directory.Exists(targetPath))
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = targetPath,
+                            UseShellExecute = true
+                        });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"エクスプローラーを開けませんでした: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+        // 「エクスプローラーペインを空にする」メニュークリック
+        private void MenuClearExplorerPane_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // 1. ツリービューの中身をすべてクリア
+                FileExplorerTreeView.Items.Clear();
+
+                // 2. 保持しているパスや状態をリセット
+                _currentRootFolderPath = string.Empty;
+                _currentBveepFilePath = string.Empty;
+
+                // 3. 動作中のファイル監視（FileSystemWatcher）を停止・破棄する
+                if (_fileSystemWatcher != null)
+                {
+                    _fileSystemWatcher.EnableRaisingEvents = false;
+                    _fileSystemWatcher.Dispose();
+                    _fileSystemWatcher = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                // 失敗したときにメッセージボックスで通知する
+                MessageBox.Show($"エクスプローラーペインを空にできませんでした。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        // デバッグ実行メニューの処理
+        private void MenuDebugRun_Click(object sender, RoutedEventArgs e)
+        {
+            string? bvePath = currentSettings.BveExecutablePath;
+
+            // パスが未設定、またはファイルが存在しない場合
+            if (string.IsNullOrWhiteSpace(bvePath) || !File.Exists(bvePath))
+            {
+                MessageBox.Show(this, "有効なBVE実行ファイルのパスが設定されていません。\n次の画面で実行ファイル（.exe）を指定してください。", "ファイル指定", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                bvePath = PromptForBveExecutable();
+                if (string.IsNullOrEmpty(bvePath))
+                {
+                    // ユーザーが選択ダイアログをキャンセルしたことを通知して処理を中止
+                    MessageBox.Show(this, "BVE実行ファイルの選択はキャンセルされました。デバッグ実行を中止します。", "キャンセル", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+            }
+
+            // 起動試行
+            bool success = TryLaunchBve(bvePath);
+
+            if (success)
+            {
+                // 起動が成功した場合、もし設定されているパスと異なる（＝新規選択された）なら保存するか尋ねる
+                if (currentSettings.BveExecutablePath != bvePath)
+                {
+                    var result = MessageBox.Show(this,
+                        $"BVEの起動に成功しました。\nこの実行ファイルのパスを今後のために設定（保存）しますか？\n\nパス: {bvePath}",
+                        "パスの保存",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question);
+
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        currentSettings.BveExecutablePath = bvePath;
+                        currentSettings.Save();
+                    }
+                }
+            }
+            else
+            {
+                // 起動に失敗した場合のフォールバック（オープンダイアログで再指定させる）
+                MessageBox.Show(this, "BVEの起動に失敗しました。正しい実行ファイルを指定し直してください。", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+
+                string? newPath = PromptForBveExecutable();
+                if (!string.IsNullOrEmpty(newPath))
+                {
+                    if (TryLaunchBve(newPath))
+                    {
+                        var result = MessageBox.Show(this, "起動に成功しました。このパスを保存しますか？", "パスの保存", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                        if (result == MessageBoxResult.Yes)
+                        {
+                            currentSettings.BveExecutablePath = newPath;
+                            currentSettings.Save();
+                        }
+                    }
+                }
+            }
+        }
+
+        // オープンダイアログでBVEの実行ファイルを尋ねるヘルパー
+        private string? PromptForBveExecutable()
+        {
+            var openDlg = new OpenFileDialog
+            {
+                Title = "Bve5 / Bve6 実行ファイルの選択",
+                Filter = "Executable Files (*.exe)|*.exe|All Files (*.*)|*.*"
+            };
+
+            return openDlg.ShowDialog() == true ? openDlg.FileName : null;
+        }
+
+        // 実際にプロセスを起動するヘルパー
+        private bool TryLaunchBve(string path)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo(path)
+                {
+                    UseShellExecute = true
+                };
+                Process.Start(startInfo);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void MenuDebugRunQMV_Click(object sender, RoutedEventArgs e)
+        {
+            string? QMVPath = currentSettings.QuickMapViewerExecutablePath;
+
+            // パスが未設定、またはファイルが存在しない場合
+            if (string.IsNullOrWhiteSpace(QMVPath) || !File.Exists(QMVPath))
+            {
+                MessageBox.Show(this, "有効なQuickMapViewer実行ファイルのパスが設定されていません。\n次の画面で実行ファイル（.exe）を指定してください。", "ファイル指定", MessageBoxButton.OK, MessageBoxImage.Information);
+
+                QMVPath = PromptForQMVExecutable();
+                if (string.IsNullOrEmpty(QMVPath))
+                {
+                    // ユーザーが選択ダイアログをキャンセルしたことを通知して処理を中止
+                    MessageBox.Show(this, "QuickMapViewer実行ファイルの選択はキャンセルされました。実行を中止します。", "キャンセル", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return; // ユーザーがキャンセルした場合
+                }
+            }
+
+            // 起動試行
+            bool success = TryLaunchQMV(QMVPath);
+
+            if (success)
+            {
+                // 起動が成功した場合、もし設定されているパスと異なる（＝新規選択された）なら保存するか尋ねる
+                if (currentSettings.BveExecutablePath != QMVPath)
+                {
+                    var result = MessageBox.Show(this,
+                        $"QuickMapViewerの起動に成功しました。\nこの実行ファイルのパスを今後のために設定（保存）しますか？\n\nパス: {QMVPath}",
+                        "パスの保存",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question);
+
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        currentSettings.QuickMapViewerExecutablePath = QMVPath;
+                        currentSettings.Save();
+                    }
+                }
+            }
+            else
+            {
+                // 起動に失敗した場合のフォールバック（オープンダイアログで再指定させる）
+                MessageBox.Show(this, "QuickMapViewerの起動に失敗しました。正しい実行ファイルを指定し直してください。", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+
+                string? newPath = PromptForQMVExecutable();
+                if (!string.IsNullOrEmpty(newPath))
+                {
+                    if (TryLaunchQMV(newPath))
+                    {
+                        var result = MessageBox.Show(this, "起動に成功しました。このパスを保存しますか？", "パスの保存", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                        if (result == MessageBoxResult.Yes)
+                        {
+                            currentSettings.QuickMapViewerExecutablePath = newPath;
+                            currentSettings.Save();
+                        }
+                    }
+                }
+            }
+
+        }
+        // オープンダイアログでBVEの実行ファイルを尋ねるヘルパー
+        private string? PromptForQMVExecutable()
+        {
+            var openDlg = new OpenFileDialog
+            {
+                Title = "QuickMapViewer 実行ファイルの選択",
+                Filter = "Executable Files (*.exe)|*.exe|All Files (*.*)|*.*"
+            };
+
+            return openDlg.ShowDialog() == true ? openDlg.FileName : null;
+        }
+
+        // 実際にプロセスを起動するヘルパー
+        private bool TryLaunchQMV(string path)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo(path)
+                {
+                    UseShellExecute = true
+                };
+                Process.Start(startInfo);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+    }
 }

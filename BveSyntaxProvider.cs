@@ -85,7 +85,8 @@ namespace BveMapEditor
                 new BveCompletionData("Section.SetSpeedLimit();", "信号現示速度を定義します"),
                 new BveCompletionData("Signal.SpeedLimit();", "信号現示速度を定義します"),
                 new BveCompletionData("Beacon.Put();", "地上子の送信イベントを設定します。"),
-
+                new BveCompletionData("Section.Begin();","閉塞を設定します"),
+                new BveCompletionData("Section.BeginNew();","閉塞を設定します"),
                 // 先行列車/他列車
                 new BveCompletionData("PreTrain.Pass();", "先行列車が通過する時刻"),
                 new BveCompletionData("Train.Add();", "他列車を追加します"),
@@ -101,6 +102,7 @@ namespace BveMapEditor
 
                                 //フォグ
                 new BveCompletionData("Fog.Interpolate();","フォグを設定します"),
+                new BveCompletionData("Fog.Set();","フォグを設定します"),
 
 
                                 //描画距離
@@ -109,6 +111,8 @@ namespace BveMapEditor
 
                                 //運転台
                 new BveCompletionData("CabIlluminance.Interpolate();","運転台の明るさを設定します"),
+                new BveCompletionData("CabIlluminance.Set();","運転台の明るさを設定します"),
+
                                 //軌道変位
                 new BveCompletionData("Irregularity.Change();","軌道変位を設定します"),
 
@@ -133,6 +137,39 @@ namespace BveMapEditor
                 new BveCompletionData("FlangeNoise.Change();","フランジ音を設定します")
                 // 必要に応じてここに追加していくことができます！
             };
+        }
+        // ★ 追加：パーサー用に、登録されている有効なコマンド名のセットを自動抽出するメソッド
+        public static HashSet<string> GetValidCommands()
+        {
+            var validCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var syntax in GetAllSyntaxes())
+            {
+                // ※もし BveCompletionData のテキストプロパティ名が "Text" ではない場合は、
+                //   実際のプロパティ名（例: Name や DisplayText など）に書き換えてください。
+                string text = syntax.Text;
+                if (string.IsNullOrEmpty(text)) continue;
+
+                // ヘッダーの特殊ケース
+                if (text.StartsWith("BveTs Map", StringComparison.OrdinalIgnoreCase))
+                {
+                    validCommands.Add("BveTs Map");
+                    continue;
+                }
+
+                // 最初の (、[、スペース、または ; が現れるまでの部分をコマンド名として抽出する
+                // 例: "Include 'example.txt';" -> "Include"
+                //     "Station.Load('st.csv');" -> "Station.Load"
+                int index = text.IndexOfAny(new char[] { '(', '[', ' ', ';' });
+                string commandName = index >= 0 ? text.Substring(0, index) : text;
+
+                if (!string.IsNullOrEmpty(commandName))
+                {
+                    validCommands.Add(commandName);
+                }
+            }
+
+            return validCommands;
         }
     }
 }

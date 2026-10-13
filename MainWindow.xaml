@@ -16,7 +16,7 @@
 
     <DockPanel>
         <!-- 画面上部のメニューバー -->
-        <Menu DockPanel.Dock="Top" Background="#F0F0F0" Padding="2">
+        <Menu DockPanel.Dock="Top" Background="#F0F0F0" Padding="4">
             <MenuItem Header="ファイル(_F)">
                 <MenuItem Header="新規作成(_N)" Command="ApplicationCommands.New" />
                 <MenuItem Header="ファイルを開く(_O)..." Command="ApplicationCommands.Open" />
@@ -25,6 +25,11 @@
                 <MenuItem Header="上書き保存(_S)" Command="ApplicationCommands.Save" />
                 <MenuItem Header="名前を付けて保存(_A)..." Command="ApplicationCommands.SaveAs" InputGestureText="Ctrl+Shift+S" />
                 <Separator />
+                <MenuItem x:Name="LoadExpPane" Header="開く(エクスプローラーペイン)" Click="MenuOpenBveep_Click"/>
+                <MenuItem x:Name="SaveExpPane" Header="上書き保存(エクスプローラーペイン)" Click="MenuSaveBveep_Click"/>
+                <MenuItem x:Name="SaveAsExpPane" Header="別名で保存(エクスプローラーペイン)" Click="MenuSaveAsBveep_Click" />
+                <MenuItem Header="エクスプローラーペインを空にする" Click="MenuClearExplorerPane_Click"/>
+                <Separator />
                 <MenuItem Header="終了(_X)" Command="ApplicationCommands.Close" />
             </MenuItem>
             <!-- ★追加した「編集」メニュー -->
@@ -32,6 +37,14 @@
                 <MenuItem x:Name="MenuUndo" Header="変更を戻す(_U)" Click="MenuUndo_Click" InputGestureText="Ctrl+Z" IsEnabled="False" />
                 <MenuItem x:Name="MenuRedo" Header="やり直す(_R)" Click="MenuRedo_Click" InputGestureText="Ctrl+Y" IsEnabled="False" />
                 <MenuItem x:Name="MenuWordWrap" Header="右端で折り返す(_W)" IsCheckable="True" Click="MenuWordWrap_Click" />
+                <MenuItem x:Name="MenuCut" Header="切り取り(_T)" Click="MenuCut_Click" IsEnabled="False" />
+                <MenuItem x:Name="MenuCopy" Header="コピー(_C)" Click="MenuCopy_Click" IsEnabled="False" />
+                <MenuItem x:Name="MenuPaste" Header="貼り付け(_P)" Click="MenuPaste_Click" />
+                <Separator />
+                <MenuItem Header="すべて選択(_A)" Click="MenuSelectAll_Click" InputGestureText="Ctrl+A" />
+                <Separator />
+                <!-- ★ 追加 -->
+                <MenuItem Header="検索(_F)..." Click="MenuSearch_Click" InputGestureText="Ctrl+F" />
             </MenuItem>
             <MenuItem Header="設定">
                 <MenuItem Header="フォント設定..." Click="MenuFontSettings_Click" />
@@ -45,6 +58,24 @@
                     <MenuItem x:Name="MenuThemeLight" Header="ライト(_L)" IsCheckable="True" Click="ThemeMenuItem_Click" Tag="Light" />
                     <MenuItem x:Name="MenuThemeDark" Header="ダーク(_D)" IsCheckable="True" Click="ThemeMenuItem_Click" Tag="Dark" />
                 </MenuItem>
+                <Separator />
+                <!-- ★ 追加 -->
+                <MenuItem Header="詳細設定(_D)..." Click="MenuDetailSettings_Click" />
+            </MenuItem>
+            <!-- 設定メニューとヘルプメニューの間に「デバッグ」を追加 -->
+            <MenuItem Header="デバッグ(_D)">
+                <MenuItem Header="BVEでデバッグ実行(_R)" Click="MenuDebugRun_Click" />
+                <MenuItem Header="QuickMapViewerを実行(_R)" Click="MenuDebugRunQMV_Click" />
+
+            </MenuItem>
+            <MenuItem Header="ヘルプ(_H)">
+                <!-- ★ 追加：BVE公式サイトへのリンクメニュー -->
+                <MenuItem Header="BVE公式サイト(_B)" Click="MenuBveSite_Click" />
+                <MenuItem Header="BVE 公開ガイドライン" Click="MenuBveSiteGuide_Click" />
+                <MenuItem Header="BVE ファイル書式" Click="MenuBveformat_Click" />
+
+                <Separator />
+                <MenuItem Header="バージョン情報(_A)..." Click="MenuAbout_Click" />
             </MenuItem>
         </Menu>
         <Grid>
@@ -58,9 +89,29 @@
             <!-- 1. 左側: エクスプローラーペイン -->
             <DockPanel Grid.Column="0" LastChildFill="True" Background="#FFF5F5F5">
                 <TextBlock Text="エクスプローラー" DockPanel.Dock="Top" Background="#FFE0E0E0" Padding="8,5" FontWeight="Bold"/>
-                <TreeView x:Name="FileExplorerTreeView" Margin="2"
-                          SelectedItemChanged="FileExplorerTreeView_SelectedItemChanged" />
-    </DockPanel>
+                <TreeView x:Name="FileExplorerTreeView" Margin="2" SelectedItemChanged="FileExplorerTreeView_SelectedItemChanged" MouseDoubleClick="FileExplorerTreeView_MouseDoubleClick"
+                          ContextMenuOpening="FileExplorerTreeView_ContextMenuOpening">
+                    <!-- ↓ここを追加 -->
+                    <TreeView.ItemContainerStyle>
+                        <Style TargetType="TreeViewItem">
+                            <EventSetter Event="MouseRightButtonDown" Handler="TreeViewItem_MouseRightButtonDown"/>
+                        </Style>
+                    </TreeView.ItemContainerStyle>
+                    <TreeView.ContextMenu>
+                        <ContextMenu x:Name="ExplorerContextMenu">
+                            <MenuItem Header="エクスプローラーで開く" Click="MenuOpenInExplorer_Click"/>
+                            <Separator/>
+                            <MenuItem Header="新規テキストファイル (*.txt)" Click="MenuNewTextFile_Click"/>
+                            <MenuItem Header="名前の変更" Click="ExplorerPaneMenuRename_Click"/>
+                            <Separator/>
+                            <MenuItem Header="コピー" Click="ExplorerPaneMenuCopy_Click"/>
+                            <MenuItem Header="貼り付け" Click="ExplorerPaneMenuPaste_Click"/>
+                            <Separator/>
+                            <MenuItem Header="再読み込み" Click="MenuRefreshTree_Click"/>
+                        </ContextMenu>
+                    </TreeView.ContextMenu>
+                </TreeView>
+            </DockPanel>
 
             <!-- 境界スプリッター -->
             <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" Background="#FFDDDDDD" />
@@ -106,6 +157,7 @@
                     </DataGrid.Columns>
                 </DataGrid>
             </Grid>
+            
         </Grid>
     </DockPanel>
 </Window>
