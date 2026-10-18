@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/ソリューション項目/">
     <File Path="BveMap.xshd" />
+    <File Path="TextFileManager.cs" />
   </Folder>
   <Project Path="BveMapEditor.csproj" />
 </Solution>

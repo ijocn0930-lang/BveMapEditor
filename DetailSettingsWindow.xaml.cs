@@ -85,6 +85,8 @@ namespace BveMapEditor
             ChkRetainSearchHistory.IsChecked = _settings.RetainSearchHistory;
             // ウィンドウを開いたときに現在の設定状態をチェックボックスに反映
             chkAutoCompleteBrackets.IsChecked = _settings.AutoCompleteBrackets;
+            // 保存時のエンコーディング確認設定を反映
+            ChkConfirmEncodingOnSave.IsChecked = _settings.ConfirmEncodingOnSave;
             _initialBvePath = _settings.BveExecutablePath ?? string.Empty;
             _initialQuickMapPath = _settings.QuickMapViewerExecutablePath ?? string.Empty;
             // BVE実行ファイルパスの初期値をテキストボックスに反映
@@ -107,6 +109,8 @@ namespace BveMapEditor
             _settings.RetainSearchHistory = ChkRetainSearchHistory.IsChecked == true;
             _settings.BveExecutablePath = TxtBvePath.Text.Trim();
             _settings.QuickMapViewerExecutablePath = TxtQuickMapPath.Text.Trim();
+            // ConfirmEncodingOnSave を反映
+            _settings.ConfirmEncodingOnSave = ChkConfirmEncodingOnSave.IsChecked == true;
 
             // もし「履歴を保持する」がオフになった場合は、即座に保持データをクリアする
             if (!_settings.RetainSearchHistory)
@@ -160,6 +164,20 @@ namespace BveMapEditor
         {
             DialogResult = false;
             Close();
+        }
+
+        private void BtnResetPerFileEncoding_Click(object sender, RoutedEventArgs e)
+        {
+            var result = MessageBox.Show(this,
+                "保存時に特定ファイルのエンコーディングをスキップする設定をすべて削除しますか？",
+                "確認",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (result == MessageBoxResult.Yes)
+            {
+                _settings.PerFileEncodingMap.Clear();
+                MessageBox.Show(this, "特定ファイルのエンコーディング設定をリセットしました。", "完了", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
         // ★ ウィンドウが閉じられる直前の共通イベント（「×」ボタンやキャンセル時の共通ガード）
         protected override void OnClosing(CancelEventArgs e)

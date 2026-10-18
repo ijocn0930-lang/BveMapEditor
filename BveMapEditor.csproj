@@ -12,12 +12,16 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
-    <DebugType>none</DebugType>
+    <DebugType>portable</DebugType>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-    <DebugType>none</DebugType>
+    <DebugType>portable</DebugType>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="abc.txt" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="AvalonEdit" Version="6.3.1.120" />

@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:BveMapEditor"
         mc:Ignorable="d"
-        Title="詳細設定" Height="420" Width="480"
+        Title="詳細設定" Height="550" Width="480"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Grid Margin="16">
         <Grid.RowDefinitions>
@@ -65,15 +65,28 @@
         </StackPanel>
 
         <!-- 4. ファイル関連付けセクション -->
-        <StackPanel Grid.Row="4" Margin="0,0,0,14">
-            <TextBlock Text="ファイル関連付け (.bveep)" FontWeight="Bold" Margin="0,0,0,4"/>
-            <TextBlock Text="エクスプローラペイン設定ファイルを関連付けに登録します。" Foreground="Gray" FontSize="11" Margin="0,0,0,2"/>
-            <TextBlock Text="※アプリケーションを削除する場合は先に関連付けを解除してください。" Foreground="Gray" FontSize="11" Margin="0,0,0,6"/>
-            <StackPanel Orientation="Horizontal">
-                <Button x:Name="BtnRegister" Content="関連付け登録" Width="110" Height="25" Click="BtnRegister_Click" Margin="0,0,8,0"/>
-                <Button x:Name="BtnUnregister" Content="関連付け解除" Width="110" Height="25" Click="BtnUnregister_Click"/>
+        <Grid Grid.Row="4" Margin="0,0,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="ファイル関連付け (.bveep)" FontWeight="Bold" Margin="0,0,0,6"/>
+                <CheckBox x:Name="ChkConfirmEncodingOnSave" Margin="0,0,0,8">
+                    <TextBlock Text="保存時にエンコーディングを確認する (オン: 確認ダイアログ表示、オフ: 元のエンコーディングを保持)" TextWrapping="Wrap" />
+                </CheckBox>
+
+                <TextBlock Text="エクスプローラペイン設定ファイルを関連付けに登録します。" Foreground="Gray" FontSize="11" Margin="0,6,0,2" TextWrapping="Wrap" />
+                <TextBlock Text="※アプリケーションを削除する場合は先に関連付けを解除してください。" Foreground="Gray" FontSize="11" Margin="0,0,0,6" TextWrapping="Wrap" />
             </StackPanel>
-        </StackPanel>
+
+            <StackPanel Grid.Column="1" VerticalAlignment="Top" HorizontalAlignment="Right">
+                <Button x:Name="BtnRegister" Content="関連付け登録" Width="140" Height="30" Click="BtnRegister_Click" Margin="0,0,0,8"/>
+                <Button x:Name="BtnUnregister" Content="関連付け解除" Width="140" Height="30" Click="BtnUnregister_Click" Margin="0,0,8,8"/>
+                <Button x:Name="BtnResetPerFileEncoding" Content="特定ファイルの設定をリセット" Width="200" Height="28" Click="BtnResetPerFileEncoding_Click" />
+            </StackPanel>
+        </Grid>
 
         <!-- 5. OK・キャンセルボタン -->
         <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">

@@ -45,7 +45,7 @@ namespace BveMapEditor
                         "1:直線逓減",
                 TextWrapping = TextWrapping.Wrap
                 }),
-                new BveCompletionData("Curve.Center();", "自軌道のカント回転中心を設定します。"),
+                new BveCompletionData("Curve.SetCenter();", "自軌道のカント回転中心を設定します。"),
                 new BveCompletionData("Curve.BeginTransition();", "自軌道の曲線の逓減を開始します。"),
                 new BveCompletionData("Curve.Begin();", "自軌道の曲線を開始します。"),
                 new BveCompletionData("Curve.End();", "自軌道の曲線を終了します。"),
@@ -134,7 +134,13 @@ namespace BveMapEditor
                 new BveCompletionData("JointNoise.Change();","フランジ音を設定します"),
 
                 //フランジ音
-                new BveCompletionData("FlangeNoise.Change();","フランジ音を設定します")
+                new BveCompletionData("FlangeNoise.Change();","フランジ音を設定します"),
+
+                                //レガシー構文（非推奨）
+                new BveCompletionData("Legacy.Curve();","レガシー構文です。曲線を設定します"),
+                new BveCompletionData("Legacy.Fog();","レガシー構文です。フォグを設定します"),
+                new BveCompletionData("Legacy.Pitch();","レガシー構文です。こう配を設定します")
+
                 // 必要に応じてここに追加していくことができます！
             };
         }
@@ -160,7 +166,7 @@ namespace BveMapEditor
                 // 最初の (、[、スペース、または ; が現れるまでの部分をコマンド名として抽出する
                 // 例: "Include 'example.txt';" -> "Include"
                 //     "Station.Load('st.csv');" -> "Station.Load"
-                int index = text.IndexOfAny(new char[] { '(', '[', ' ', ';' });
+                int index = text.IndexOfAny(['(', '[', ' ', ';']);
                 string commandName = index >= 0 ? text.Substring(0, index) : text;
 
                 if (!string.IsNullOrEmpty(commandName))

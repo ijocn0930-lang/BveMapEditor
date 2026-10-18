@@ -40,6 +40,15 @@ namespace BveMapEditor
         public string BveExecutablePath { get; set; } = string.Empty;
         // ★ 追加：QuickMapViewer の実行ファイルパス
         public string QuickMapViewerExecutablePath { get; set; } = string.Empty;
+        // ステータスバーの表示状態
+        public bool ShowStatusBar { get; set; } = true;
+        // Insertキーで上書きモード切替を許可するか
+        public bool AllowOverwriteToggle { get; set; } = true;
+        // 保存時にエンコーディングを確認するか（true = 確認ダイアログを表示、false = 元のエンコーディングを保持）
+        public bool ConfirmEncodingOnSave { get; set; } = true;
+        // 特定ファイルごとに上書き保存時のエンコーディングをスキップするためのマップ
+        // キー: 絶対ファイルパス, 値: Encoding.WebName（例: "utf-8", "shift_jis"）
+        public Dictionary<string, string> PerFileEncodingMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static readonly string SettingsFilePath = "settings.json"; //jsonの場所
 
         // 設定をファイルから読み込む

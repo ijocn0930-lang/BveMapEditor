@@ -1,5 +1,6 @@
 ﻿using Microsoft.Win32;
 using System;
+using System.Text;
 using System.Configuration;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -30,6 +31,17 @@ namespace BveMapEditor
                     return;
                 }
             }
+            // CodePages エンコーディング（Shift-JIS / CP932 等）を利用可能にする
+            // NuGet: System.Text.Encoding.CodePages をインストールしておくこと
+            try
+            {
+                Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            }
+            catch
+            {
+                // 登録に失敗しても継続（パッケージ未導入の場合は既定のエンコーディングのみ利用可）
+            }
+
             base.OnStartup(e);
             // 1. 【最優先】ウィンドウを作る前に、カレントディレクトリをアプリのある場所に強制固定する
             // これにより、AvalonEditなどのハイライトファイルが常に正しく見つかるようになります。

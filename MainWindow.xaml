@@ -30,28 +30,38 @@
                 <MenuItem x:Name="SaveAsExpPane" Header="別名で保存(エクスプローラーペイン)" Click="MenuSaveAsBveep_Click" />
                 <MenuItem Header="エクスプローラーペインを空にする" Click="MenuClearExplorerPane_Click"/>
                 <Separator />
+                <!--プロジェクト（タブとエクスプローラーペイン保持ファイル）-->
+                <MenuItem Header="プロジェクトを開く"/> <!--タブ含むプロジェクトを開く-->
+                <MenuItem Header="プロジェクトを上書き保存"/> <!--タブ含むプロジェクトを開く-->
+                <MenuItem Header="プロジェクトを別名で保存"/> <!--タブ含むプロジェクトを開く-->
+                <Separator />
+                <MenuItem Header="タブを閉じる" Click="MenuCloseTab_Click" />
+                <MenuItem Header="すべてのタブを閉じる" Click="MenuCloseAllTabs_Click" />
                 <MenuItem Header="終了(_X)" Command="ApplicationCommands.Close" />
+
             </MenuItem>
             <!-- ★追加した「編集」メニュー -->
             <MenuItem Header="編集">
                 <MenuItem x:Name="MenuUndo" Header="変更を戻す(_U)" Click="MenuUndo_Click" InputGestureText="Ctrl+Z" IsEnabled="False" />
                 <MenuItem x:Name="MenuRedo" Header="やり直す(_R)" Click="MenuRedo_Click" InputGestureText="Ctrl+Y" IsEnabled="False" />
-                <MenuItem x:Name="MenuWordWrap" Header="右端で折り返す(_W)" IsCheckable="True" Click="MenuWordWrap_Click" />
                 <MenuItem x:Name="MenuCut" Header="切り取り(_T)" Click="MenuCut_Click" IsEnabled="False" />
                 <MenuItem x:Name="MenuCopy" Header="コピー(_C)" Click="MenuCopy_Click" IsEnabled="False" />
                 <MenuItem x:Name="MenuPaste" Header="貼り付け(_P)" Click="MenuPaste_Click" />
                 <Separator />
+                <MenuItem x:Name="MenuWordWrap" Header="右端で折り返す(_W)" IsCheckable="True" Click="MenuWordWrap_Click" />
                 <MenuItem Header="すべて選択(_A)" Click="MenuSelectAll_Click" InputGestureText="Ctrl+A" />
                 <Separator />
-                <!-- ★ 追加 -->
                 <MenuItem Header="検索(_F)..." Click="MenuSearch_Click" InputGestureText="Ctrl+F" />
             </MenuItem>
+            <!-- ★追加した「設定」メニュー -->
             <MenuItem Header="設定">
                 <MenuItem Header="フォント設定..." Click="MenuFontSettings_Click" />
                 <MenuItem x:Name="MenuAutoCompletion" 
                   Header="自動補完を有効にする(_A)" 
                   IsCheckable="True" 
                   Click="MenuAutoCompletion_Click" />
+                    <MenuItem x:Name="MenuAllowOverwriteToggle" Header="Insertキーで上書き切替を許可" IsCheckable="True" Click="MenuAllowOverwriteToggle_Click" />
+                    <MenuItem x:Name="MenuStatusBar" Header="ステータスバーを表示" IsCheckable="True" Click="MenuStatusBar_Click" />
                 <Separator />
                 <MenuItem Header="テーマ(_T)">
                     <MenuItem x:Name="MenuThemeSystem" Header="システム既定(_S)" IsCheckable="True" Click="ThemeMenuItem_Click" Tag="System" />
@@ -59,10 +69,8 @@
                     <MenuItem x:Name="MenuThemeDark" Header="ダーク(_D)" IsCheckable="True" Click="ThemeMenuItem_Click" Tag="Dark" />
                 </MenuItem>
                 <Separator />
-                <!-- ★ 追加 -->
                 <MenuItem Header="詳細設定(_D)..." Click="MenuDetailSettings_Click" />
             </MenuItem>
-            <!-- 設定メニューとヘルプメニューの間に「デバッグ」を追加 -->
             <MenuItem Header="デバッグ(_D)">
                 <MenuItem Header="BVEでデバッグ実行(_R)" Click="MenuDebugRun_Click" />
                 <MenuItem Header="QuickMapViewerを実行(_R)" Click="MenuDebugRunQMV_Click" />
@@ -78,6 +86,18 @@
                 <MenuItem Header="バージョン情報(_A)..." Click="MenuAbout_Click" />
             </MenuItem>
         </Menu>
+        <!-- ウィンドウ下部のステータスバー -->
+        <StatusBar DockPanel.Dock="Bottom" x:Name="MainStatusBar" Background="#F5F5F5">
+            <StatusBarItem>
+                <TextBlock x:Name="StatusText" Text="準備完了" />
+            </StatusBarItem>
+            <StatusBarItem>
+                <TextBlock x:Name="EditModeText" Text="挿入" Margin="8,0" />
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock x:Name="CaretPositionText" Text="" />
+            </StatusBarItem>
+        </StatusBar>
         <Grid>
             <!-- 全体を左右に分割 (左: エクスプローラー, 右: 編集・エラーエリア) -->
             <Grid.ColumnDefinitions>
@@ -91,7 +111,6 @@
                 <TextBlock Text="エクスプローラー" DockPanel.Dock="Top" Background="#FFE0E0E0" Padding="8,5" FontWeight="Bold"/>
                 <TreeView x:Name="FileExplorerTreeView" Margin="2" SelectedItemChanged="FileExplorerTreeView_SelectedItemChanged" MouseDoubleClick="FileExplorerTreeView_MouseDoubleClick"
                           ContextMenuOpening="FileExplorerTreeView_ContextMenuOpening">
-                    <!-- ↓ここを追加 -->
                     <TreeView.ItemContainerStyle>
                         <Style TargetType="TreeViewItem">
                             <EventSetter Event="MouseRightButtonDown" Handler="TreeViewItem_MouseRightButtonDown"/>
@@ -119,31 +138,47 @@
             <!-- 2. 右側: メインエリア（上下分割：エディタ ＆ エラー一覧） -->
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="*" />
+                    <!-- MapTextEditor が完全に隠れないよう最小高さを設定 -->
+                    <RowDefinition Height="*" MinHeight="120" />
                     <RowDefinition Height="150" />
                 </Grid.RowDefinitions>
 
-                <avalonEdit:TextEditor x:Name="MapTextEditor"
-                                       Grid.Row="0"
-                                       FontFamily="Consolas"
-                                       FontSize="14"
-                                       ShowLineNumbers="True"
-                                       TextChanged="MapTextEditor_TextChanged"
-                                       PreviewMouseWheel="MapTextEditor_PreviewMouseWheel">
-                    <!-- ★ ContextMenuService の添付プロパティを使用する -->
-                    <ContextMenuService.ContextMenu>
-                        <ContextMenu>
-                            <MenuItem Header="元に戻す(_U)" Command="ApplicationCommands.Undo" InputGestureText="Ctrl+Z" />
-                            <MenuItem Header="やり直す(_R)" Command="ApplicationCommands.Redo" InputGestureText="Ctrl+Y" />
-                            <Separator />
-                            <MenuItem Header="切り取り(_T)" Command="ApplicationCommands.Cut" InputGestureText="Ctrl+X" />
-                            <MenuItem Header="コピー(_C)" Command="ApplicationCommands.Copy" InputGestureText="Ctrl+C" />
-                            <MenuItem Header="貼り付け(_P)" Command="ApplicationCommands.Paste" InputGestureText="Ctrl+V" />
-                            <Separator />
-                            <MenuItem Header="すべて選択(_A)" Command="ApplicationCommands.SelectAll" InputGestureText="Ctrl+A" />
-                        </ContextMenu>
-                    </ContextMenuService.ContextMenu>
-                </avalonEdit:TextEditor>
+                <!-- エディタ領域をタブ化 -->
+                <TabControl x:Name="EditorTabControl" Grid.Row="0" MinHeight="120" SelectionChanged="EditorTabControl_SelectionChanged">
+                    <!-- 初期タブ: 既存の MapTextEditor をこのタブ内に配置 -->
+                    <TabItem Header="無題" IsSelected="True">
+                        <avalonEdit:TextEditor x:Name="MapTextEditor"
+                                               MinHeight="120"
+                                               FontFamily="Consolas"
+                                               FontSize="14"
+                                               ShowLineNumbers="True"
+                                               TextChanged="MapTextEditor_TextChanged"
+                                               PreviewMouseWheel="MapTextEditor_PreviewMouseWheel">
+                            <!-- ★ ContextMenuService の添付プロパティを使用する -->
+                            <ContextMenuService.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="元に戻す(_U)" Command="ApplicationCommands.Undo" InputGestureText="Ctrl+Z" />
+                                    <MenuItem Header="やり直す(_R)" Command="ApplicationCommands.Redo" InputGestureText="Ctrl+Y" />
+                                    <Separator />
+                                    <MenuItem Header="切り取り(_T)" Command="ApplicationCommands.Cut" InputGestureText="Ctrl+X" />
+                                    <MenuItem Header="コピー(_C)" Command="ApplicationCommands.Copy" InputGestureText="Ctrl+C" />
+                                    <MenuItem Header="貼り付け(_P)" Command="ApplicationCommands.Paste" InputGestureText="Ctrl+V" />
+                                    <Separator />
+                                    <MenuItem Header="すべて選択(_A)" Command="ApplicationCommands.SelectAll" InputGestureText="Ctrl+A" />
+                                </ContextMenu>
+                            </ContextMenuService.ContextMenu>
+                        </avalonEdit:TextEditor>
+                    </TabItem>
+                    <!-- TabItem template for close button could be added per-tab if desired -->
+                </TabControl>
+                <!-- MapTextEditor と ErrorListDataGrid の間に配置する水平スプリッター -->
+                <GridSplitter Grid.Row="0"
+                              Height="5"
+                              HorizontalAlignment="Stretch"
+                              VerticalAlignment="Bottom"
+                              Background="#FFDDDDDD"
+                              ShowsPreview="True"
+                              ResizeDirection="Rows" />
                 <!-- 下部: エラー一覧 DataGrid -->
                 <DataGrid x:Name="ErrorListDataGrid" 
                       Grid.Row="1" 
@@ -151,13 +186,13 @@
                       IsReadOnly="True"
                       MouseDoubleClick="ErrorListDataGrid_MouseDoubleClick">
                     <DataGrid.Columns>
+                        <DataGridTextColumn Header="レベル" Binding="{Binding Level}" Width="40" />
                         <DataGridTextColumn Header="行" Binding="{Binding Line}" Width="60" />
                         <DataGridTextColumn Header="列" Binding="{Binding Column}" Width="60" />
                         <DataGridTextColumn Header="メッセージ" Binding="{Binding Message}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
             </Grid>
-            
         </Grid>
     </DockPanel>
 </Window>

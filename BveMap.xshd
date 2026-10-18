@@ -125,8 +125,24 @@
 		</Keywords>
 		<Keywords color="FKeyword1">
 			<Word>BveEx</Word><!--テキストエディタ非対応-->
+			<Word>null</Word>
 		</Keywords>
-
+		<Rule color="FKeyword1">
+			<!--レガシー構文-->
+			\bLegacy\.Curve\b
+		</Rule>
+		<Rule color="FKeyword1">
+			<!--レガシー構文-->
+			\bLegacy\.Pitch\b
+		</Rule>
+		<Rule color="FKeyword1">
+			<!--レガシー構文-->
+			\bLegacy\.Fog\b
+		</Rule>
+		<Rule color="FKeyword1">
+			<!--テキストエディタ非対応-->
+			\bBveEx\.User\b
+		</Rule>
 		<Rule color="BKeyword1">
 			BveTs\s+Map\s+2.02
 		</Rule>
