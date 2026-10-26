@@ -9,6 +9,8 @@
     <PlatformTarget>x64</PlatformTarget>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationIcon>Properties\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
@@ -20,11 +22,27 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="CheckCommandArguments.cs" />
+    <Compile Remove="CheckCommandSyntax.cs" />
+    <Compile Remove="CommandRules.cs" />
+    <Compile Remove="MapParser.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="abc.txt" />
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="Properties\app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="AvalonEdit" Version="6.3.1.120" />
+    <PackageReference Include="DynamicExpresso.Core" Version="2.19.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BveMapParserWorker\BveMapParserWorker.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -45,6 +63,15 @@
     <None Update="BveMap.xshd">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <None Update="Help\default.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Help\Put.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Help\Structure.html">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
@@ -53,6 +80,11 @@
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Help - コピー\" />
+    <Folder Include="新しいフォルダー\" />
   </ItemGroup>
 
 </Project>

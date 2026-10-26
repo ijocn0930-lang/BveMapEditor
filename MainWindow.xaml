@@ -31,16 +31,15 @@
                 <MenuItem Header="エクスプローラーペインを空にする" Click="MenuClearExplorerPane_Click"/>
                 <Separator />
                 <!--プロジェクト（タブとエクスプローラーペイン保持ファイル）-->
-                <MenuItem Header="プロジェクトを開く"/> <!--タブ含むプロジェクトを開く-->
-                <MenuItem Header="プロジェクトを上書き保存"/> <!--タブ含むプロジェクトを開く-->
-                <MenuItem Header="プロジェクトを別名で保存"/> <!--タブ含むプロジェクトを開く-->
+                <MenuItem Header="プロジェクトを開く" Click="MenuOpenProject_Click"/> <!--仮タブ含むプロジェクトを開く-->
+                <MenuItem Header="プロジェクトを上書き保存" Click="MenuSaveProject_Click"/> <!--仮タブ含むプロジェクトを保存-->
+                <MenuItem Header="プロジェクトを別名で保存" Click="MenuSaveProjectAs_Click"/> <!--仮タブ含むプロジェクトを名前を付けて保存-->
                 <Separator />
                 <MenuItem Header="タブを閉じる" Click="MenuCloseTab_Click" />
                 <MenuItem Header="すべてのタブを閉じる" Click="MenuCloseAllTabs_Click" />
                 <MenuItem Header="終了(_X)" Command="ApplicationCommands.Close" />
-
+                <!--<MenuItem Header="Crash" Click="Crash_Click" />--><!--デバッグするならコメントアウト解除-->
             </MenuItem>
-            <!-- ★追加した「編集」メニュー -->
             <MenuItem Header="編集">
                 <MenuItem x:Name="MenuUndo" Header="変更を戻す(_U)" Click="MenuUndo_Click" InputGestureText="Ctrl+Z" IsEnabled="False" />
                 <MenuItem x:Name="MenuRedo" Header="やり直す(_R)" Click="MenuRedo_Click" InputGestureText="Ctrl+Y" IsEnabled="False" />
@@ -53,7 +52,7 @@
                 <Separator />
                 <MenuItem Header="検索(_F)..." Click="MenuSearch_Click" InputGestureText="Ctrl+F" />
             </MenuItem>
-            <!-- ★追加した「設定」メニュー -->
+            <!-- 「設定」メニュー -->
             <MenuItem Header="設定">
                 <MenuItem Header="フォント設定..." Click="MenuFontSettings_Click" />
                 <MenuItem x:Name="MenuAutoCompletion" 
@@ -77,7 +76,7 @@
 
             </MenuItem>
             <MenuItem Header="ヘルプ(_H)">
-                <!-- ★ 追加：BVE公式サイトへのリンクメニュー -->
+                <!-- BVE公式サイトへのリンクメニュー -->
                 <MenuItem Header="BVE公式サイト(_B)" Click="MenuBveSite_Click" />
                 <MenuItem Header="BVE 公開ガイドライン" Click="MenuBveSiteGuide_Click" />
                 <MenuItem Header="BVE ファイル書式" Click="MenuBveformat_Click" />
@@ -138,14 +137,10 @@
             <!-- 2. 右側: メインエリア（上下分割：エディタ ＆ エラー一覧） -->
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
-                    <!-- MapTextEditor が完全に隠れないよう最小高さを設定 -->
                     <RowDefinition Height="*" MinHeight="120" />
                     <RowDefinition Height="150" />
                 </Grid.RowDefinitions>
-
-                <!-- エディタ領域をタブ化 -->
-                <TabControl x:Name="EditorTabControl" Grid.Row="0" MinHeight="120" SelectionChanged="EditorTabControl_SelectionChanged">
-                    <!-- 初期タブ: 既存の MapTextEditor をこのタブ内に配置 -->
+                <TabControl x:Name="EditorTabControl" Grid.Row="0" MinHeight="120" SelectionChanged="EditorTabControl_SelectionChanged" >
                     <TabItem Header="無題" IsSelected="True">
                         <avalonEdit:TextEditor x:Name="MapTextEditor"
                                                MinHeight="120"
@@ -169,7 +164,6 @@
                             </ContextMenuService.ContextMenu>
                         </avalonEdit:TextEditor>
                     </TabItem>
-                    <!-- TabItem template for close button could be added per-tab if desired -->
                 </TabControl>
                 <!-- MapTextEditor と ErrorListDataGrid の間に配置する水平スプリッター -->
                 <GridSplitter Grid.Row="0"
@@ -184,12 +178,27 @@
                       Grid.Row="1" 
                       AutoGenerateColumns="False" 
                       IsReadOnly="True"
-                      MouseDoubleClick="ErrorListDataGrid_MouseDoubleClick">
+MouseDoubleClick="ErrorListDataGrid_MouseDoubleClick"
+                      ContextMenuOpening="ErrorListDataGrid_ContextMenuOpening">                    <!-- ★ ここから追加 -->
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="行のコピー" Click="ErrorMenuCopy_Click" InputGestureText="Ctrl+C" />
+                            <Separator />
+                            <!-- ★ x:Name を付与 -->
+                            <MenuItem x:Name="MenuErrorSelectInTree" Header="ファイルツリーでこのファイルを選択" Click="ErrorMenuSelectInTree_Click" />
+                            <MenuItem x:Name="MenuErrorOpenInExplorer" Header="エクスプローラーでファイルを表示" Click="ErrorMenuOpenInExplorer_Click" />
+                            <Separator />
+                            <MenuItem Header="このエラーについて検索・ヘルプを表示" Click="ErrorMenuSearchHelp_Click" />
+                            <MenuItem Header="Geminiに修正を依頼する" Click="ErrorMenuAskGemini_Click" />
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
+                    <!-- ★ ここまで追加 -->
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="レベル" Binding="{Binding Level}" Width="40" />
                         <DataGridTextColumn Header="行" Binding="{Binding Line}" Width="60" />
                         <DataGridTextColumn Header="列" Binding="{Binding Column}" Width="60" />
                         <DataGridTextColumn Header="メッセージ" Binding="{Binding Message}" Width="*" />
+                        <DataGridTextColumn Header="ファイル名" Binding="{Binding FileName}" Width="*" />
                     </DataGrid.Columns>
                 </DataGrid>
             </Grid>

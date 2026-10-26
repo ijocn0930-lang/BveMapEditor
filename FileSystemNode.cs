@@ -1,11 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-using System.IO;
-using System.Windows.Media;
-
-
-namespace BveMapEditor
+﻿namespace BveMapEditor
 {
     internal class FileSystemNode
     {

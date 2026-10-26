@@ -5,24 +5,26 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:BveMapEditor"
         mc:Ignorable="d"
-        Title="詳細設定" Height="550" Width="480"
+        Title="詳細設定" Height="580" Width="480"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <!-- 1: 検索履歴設定 -->
+            <!-- 0: 検索履歴設定 -->
             <RowDefinition Height="Auto"/>
-            <!-- 2: 自動補完設定 -->
+            <!-- 1: 自動補完設定 -->
+            <RowDefinition Height="Auto"/>
+            <!-- 2: 自動復元設定 (新規追加) -->
             <RowDefinition Height="Auto"/>
             <!-- 3: BVEパス設定 -->
             <RowDefinition Height="Auto"/>
-            <!-- 3.5: QuickMapViewer パス設定 -->
+            <!-- 4: QuickMapViewer パス設定 -->
             <RowDefinition Height="Auto"/>
-            <!-- 4: ファイル関連付け設定 -->
+            <!-- 5: ファイル関連付け設定 -->
             <RowDefinition Height="*"/>
-            <!-- 余白調整用 -->
+            <!-- 6: 余白調整用 -->
             <RowDefinition Height="Auto"/>
-            <!-- 5: OK/キャンセルボタン -->
+            <!-- 7: OK/キャンセルボタン -->
         </Grid.RowDefinitions>
 
         <!-- 1. 検索履歴設定セクション -->
@@ -37,9 +39,14 @@
             <CheckBox x:Name="chkAutoCompleteBrackets" Content="コード入力時の括弧（() や []）の自動補完を有効にする" 
                       FontWeight="Bold" Checked="chkAutoCompleteBrackets_Checked"/>
         </StackPanel>
-
-        <!-- 3. BVE実行ファイルパスセクション -->
+        <!-- 2.5. 自動復元設定セクション（新規追加） -->
         <StackPanel Grid.Row="2" Margin="0,0,0,14">
+            <CheckBox x:Name="ChkEnableAutoRestore" Content="起動時に前回のタブ状態とエクスプローラーペインを自動復元する" FontWeight="Bold" Margin="0,0,0,3"/>
+            <TextBlock Text="※オフにすると、起動時は常に空の状態でスタートします。（.bveepファイルからの起動時は除きます）" 
+                      Foreground="Gray" FontSize="11" TextWrapping="Wrap" Margin="18,0,0,0"/>
+        </StackPanel>
+        <!-- 3. BVE実行ファイルパスセクション -->
+        <StackPanel Grid.Row="3" Margin="0,0,0,14">
             <TextBlock Text="Bve5 / Bve6 実行ファイルパス:" FontWeight="Bold" Margin="0,0,0,4"/>
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -52,7 +59,7 @@
         </StackPanel>
 
         <!-- 3.5 QuickMapViewer 実行ファイルパスセクション -->
-        <StackPanel Grid.Row="3" Margin="0,0,0,14">
+        <StackPanel Grid.Row="4" Margin="0,0,0,14">
             <TextBlock Text="QuickMapViewer 実行ファイルパス:" FontWeight="Bold" Margin="0,0,0,4"/>
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -63,24 +70,20 @@
                 <Button Content="参照..." Grid.Column="1" Width="75" Height="25" Click="BtnBrowseQuickMap_Click"/>
             </Grid>
         </StackPanel>
-
         <!-- 4. ファイル関連付けセクション -->
-        <Grid Grid.Row="4" Margin="0,0,0,14">
+        <Grid Grid.Row="5" Margin="0,0,0,14">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-
             <StackPanel Grid.Column="0">
                 <TextBlock Text="ファイル関連付け (.bveep)" FontWeight="Bold" Margin="0,0,0,6"/>
                 <CheckBox x:Name="ChkConfirmEncodingOnSave" Margin="0,0,0,8">
                     <TextBlock Text="保存時にエンコーディングを確認する (オン: 確認ダイアログ表示、オフ: 元のエンコーディングを保持)" TextWrapping="Wrap" />
                 </CheckBox>
-
                 <TextBlock Text="エクスプローラペイン設定ファイルを関連付けに登録します。" Foreground="Gray" FontSize="11" Margin="0,6,0,2" TextWrapping="Wrap" />
                 <TextBlock Text="※アプリケーションを削除する場合は先に関連付けを解除してください。" Foreground="Gray" FontSize="11" Margin="0,0,0,6" TextWrapping="Wrap" />
             </StackPanel>
-
             <StackPanel Grid.Column="1" VerticalAlignment="Top" HorizontalAlignment="Right">
                 <Button x:Name="BtnRegister" Content="関連付け登録" Width="140" Height="30" Click="BtnRegister_Click" Margin="0,0,0,8"/>
                 <Button x:Name="BtnUnregister" Content="関連付け解除" Width="140" Height="30" Click="BtnUnregister_Click" Margin="0,0,8,8"/>
@@ -88,8 +91,8 @@
             </StackPanel>
         </Grid>
 
-        <!-- 5. OK・キャンセルボタン -->
-        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+        <!-- 5. OK・キャンセルボタン（Grid.Rowを7に変更） -->
+        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
             <Button Content="OK" Width="80" Height="25" Margin="0,0,8,0" Click="BtnOk_Click" IsDefault="True"/>
             <Button Content="キャンセル" Width="80" Height="25" Click="BtnCancel_Click" IsCancel="True"/>
         </StackPanel>

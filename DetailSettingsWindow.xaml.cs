@@ -75,18 +75,22 @@ namespace BveMapEditor
         private readonly string? _initialQuickMapPath = string.Empty; // ★ QuickMapViewer 初期パス
         // ★ 開いた時点の初期状態を保持するフィールド
         private readonly bool _initialRetainSearchHistory;
+        private readonly bool _initialEnableAutoRestore; // ★ 追加
         internal DetailSettingsWindow(AppSettings settings)
         {
             InitializeComponent();
             _settings = settings;
             // ★ 初期値を保存
             _initialRetainSearchHistory = _settings.RetainSearchHistory;
+            _initialEnableAutoRestore = _settings.EnableAutoRestore; // ★ 追加
             // 現在の設定値をUIに反映
             ChkRetainSearchHistory.IsChecked = _settings.RetainSearchHistory;
             // ウィンドウを開いたときに現在の設定状態をチェックボックスに反映
             chkAutoCompleteBrackets.IsChecked = _settings.AutoCompleteBrackets;
+            ChkEnableAutoRestore.IsChecked = _settings.EnableAutoRestore; // ★ 追加
             // 保存時のエンコーディング確認設定を反映
             ChkConfirmEncodingOnSave.IsChecked = _settings.ConfirmEncodingOnSave;
+            //パスを保持
             _initialBvePath = _settings.BveExecutablePath ?? string.Empty;
             _initialQuickMapPath = _settings.QuickMapViewerExecutablePath ?? string.Empty;
             // BVE実行ファイルパスの初期値をテキストボックスに反映
@@ -107,6 +111,7 @@ namespace BveMapEditor
             _settings.AutoCompleteBrackets = chkAutoCompleteBrackets.IsChecked ?? true;
             // UIの設定値をAppsettingsインスタンスに反映
             _settings.RetainSearchHistory = ChkRetainSearchHistory.IsChecked == true;
+            _settings.EnableAutoRestore = ChkEnableAutoRestore.IsChecked == true; // ★ 追加
             _settings.BveExecutablePath = TxtBvePath.Text.Trim();
             _settings.QuickMapViewerExecutablePath = TxtQuickMapPath.Text.Trim();
             // ConfirmEncodingOnSave を反映
@@ -188,6 +193,7 @@ namespace BveMapEditor
             if (DialogResult == true) return;
             // 変更チェック（履歴設定、Bveパス、QuickMapViewerパスのいずれかが変更されているか）
             bool isChanged = (ChkRetainSearchHistory.IsChecked != _initialRetainSearchHistory) ||
+                             (ChkEnableAutoRestore.IsChecked != _initialEnableAutoRestore) || // ★ 追加
                              (TxtBvePath.Text.Trim() != _initialBvePath) ||
                              (TxtQuickMapPath.Text.Trim() != _initialQuickMapPath);
 
@@ -221,13 +227,11 @@ namespace BveMapEditor
         {
             try
             {
-                using (var key = Registry.ClassesRoot.OpenSubKey(".bveep"))
+                using var key = Registry.ClassesRoot.OpenSubKey(".bveep");
+                if (key != null)
                 {
-                    if (key != null)
-                    {
-                        var value = key.GetValue("");
-                        return value as string == "BveEdit.ExplorerPane";
-                    }
+                    var value = key.GetValue("");
+                    return value as string == "BveEdit.ExplorerPane";
                 }
             }
             catch
@@ -296,9 +300,9 @@ namespace BveMapEditor
             }
         }
 
+        //削除しない
         private void chkAutoCompleteBrackets_Checked(object sender, RoutedEventArgs e)
         {
-
         }
         // 参照ボタンで実行ファイル(.exe)を選ぶ
         private void BtnBrowse_Click(object sender, RoutedEventArgs e)

@@ -8,7 +8,7 @@ using System.Windows.Media;
 
 namespace BveMapEditor
 {
-    internal class BveCompletionData : ICompletionData
+    public class BveCompletionData : ICompletionData
     {
         // ★ description を string から object に変更し、UI要素も受け取れるようにする
         public BveCompletionData(string text, object? description = null)

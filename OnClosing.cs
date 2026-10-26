@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Text;
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 
 namespace BveMapEditor
@@ -40,6 +36,7 @@ namespace BveMapEditor
         }
         private void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            App.LogOperation("ウィンドウクローズ");
             // ★ 追加：開いたままの子ウィンドウ（SearchWindowなど）がないかチェックする
             foreach (Window window in this.OwnedWindows)
             {
@@ -51,6 +48,7 @@ namespace BveMapEditor
                     window.Activate();
 
                     e.Cancel = true; // 終了をキャンセル
+                    App.LogOperation("クローズキャンセル");
                     return;
                 }
             }
@@ -92,6 +90,7 @@ namespace BveMapEditor
                     {
                         // 保存の途中でキャンセルされた
                         e.Cancel = true;
+                        App.LogOperation("クローズキャンセル");
                         return;
                     }
                 }
@@ -99,6 +98,5 @@ namespace BveMapEditor
             }
             _fileSystemWatcher?.Dispose();
         }
-
     }
 }

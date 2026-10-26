@@ -13,7 +13,7 @@ namespace BveMapEditor
         public string FontFamilyName { get; set; } = "Consolas";
         //fontSize
         public double FontSize { get; set; } = 14.0;
-        public bool WordWrap { get; set; } = false; // ★追加
+        public bool WordWrap { get; set; } = false; // 右端で折り返す
         // ★ 追加：ウィンドウサイズ・状態とペインサイズ
         public double WindowWidth { get; set; } = 1050;
         public double WindowHeight { get; set; } = 600;
@@ -48,6 +48,8 @@ namespace BveMapEditor
         public bool ConfirmEncodingOnSave { get; set; } = true;
         // 特定ファイルごとに上書き保存時のエンコーディングをスキップするためのマップ
         // キー: 絶対ファイルパス, 値: Encoding.WebName（例: "utf-8", "shift_jis"）
+        // ★ 追加：自動復元機能の有効/無効（デフォルトは有効）
+        public bool EnableAutoRestore { get; set; } = true;
         public Dictionary<string, string> PerFileEncodingMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private static readonly string SettingsFilePath = "settings.json"; //jsonの場所
 
@@ -60,10 +62,7 @@ namespace BveMapEditor
                 {
                     string json = File.ReadAllText(SettingsFilePath);
                     var settings = JsonSerializer.Deserialize<AppSettings>(json);
-                    if (settings != null)
-                    {
-                        return settings;
-                    }
+                    if (settings != null) return settings;
                 }
             }
             catch (Exception ex)

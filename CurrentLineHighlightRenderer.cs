@@ -1,25 +1,29 @@
 ﻿using ICSharpCode.AvalonEdit.Editing;
 using ICSharpCode.AvalonEdit.Rendering;
-using System;
-using System.Collections.Generic;
-using System.Text;
 using System.Windows;
 using System.Windows.Media;
 
 namespace BveMapEditor
 {
+    // 現在行協調クラス
     internal class CurrentLineHighlightRenderer : IBackgroundRenderer
     {
         private readonly TextArea _textArea;
         // ハイライトしたい背景色（ここでは薄い黄色やグレー系など、お好みで調整してください）
         private static readonly Brush HighlightBrush = new SolidColorBrush(Color.FromArgb(30, 0, 120, 215)); // 薄い青系
-        private static readonly Pen BorderPen = new Pen(new SolidColorBrush(Color.FromArgb(40, 0, 120, 215)), 1);
+        private static readonly Pen BorderPen = new (new SolidColorBrush(Color.FromArgb(40, 0, 120, 215)), 1);
+
 
         public CurrentLineHighlightRenderer(TextArea textArea)
         {
             _textArea = textArea;
-        }
 
+            // キャレット位置が変更されたときに行ハイライトが追随して再描画されるようにする（コンストラクタで1回のみ購読）
+            _textArea.Caret.PositionChanged += (s, e) =>
+            {
+                _textArea.TextView?.InvalidateVisual();
+            };
+        }
         public KnownLayer Layer => KnownLayer.Background;
 
         public void Draw(TextView textView, DrawingContext drawingContext)
@@ -30,8 +34,10 @@ namespace BveMapEditor
             var currentLine = _textArea.Document.GetLineByOffset(_textArea.Caret.Offset);
 
             // BackgroundGeometryBuilder を使って行の描画ジオメトリを安全に取得
-            BackgroundGeometryBuilder geoBuilder = new BackgroundGeometryBuilder();
-            geoBuilder.AlignToWholePixels = true;
+            BackgroundGeometryBuilder geoBuilder = new()
+            {
+                AlignToWholePixels = true
+            };
             geoBuilder.AddSegment(textView, new ICSharpCode.AvalonEdit.Document.TextSegment { StartOffset = currentLine.Offset, Length = currentLine.Length });
 
             var geometry = geoBuilder.CreateGeometry();
@@ -45,6 +51,6 @@ namespace BveMapEditor
                     drawingContext.DrawRectangle(HighlightBrush, BorderPen, fullWidthRect);
                 }
             }
-                }
+        }
     }
 }

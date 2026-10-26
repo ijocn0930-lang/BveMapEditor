@@ -44,6 +44,9 @@
 			\bStructure\.Load\b
 		</Rule>
 		<Rule color="DKeyword1">
+			\bTrain\s*\[\s*'[^']*'\s*\]\s*\.\s*Load\b
+		</Rule>
+		<Rule color="DKeyword1">
 			\bSection\.SetSpeedLimit\b
 		</Rule>
 		<Rule color="DKeyword1">
@@ -52,6 +55,7 @@
 		<Rule color="DKeyword1">
 			\bSignal\.SpeedLimit\b
 		</Rule>
+		
 		<!-- 4. 主要キーワード -->
 		<Keywords color="Keyword">
 			<Word>Structure</Word>

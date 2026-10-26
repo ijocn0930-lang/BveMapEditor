@@ -1,15 +1,69 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace BveMapEditor
 {
     public partial class MainWindow : Window
     {
+        #region アイコン取得用のWin32API定義
+        [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private struct SHFILEINFO
+        {
+            public IntPtr hIcon;
+            public int iIcon;
+            public uint dwAttributes;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szDisplayName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+            public string szTypeName;
+        }
+        private const uint SHGFI_ICON = 0x000000100;
+        private const uint SHGFI_SMALLICON = 0x000000001;
+        private const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
+
+        private static ImageSource? GetFileIcon(string filePath, bool isDirectory)
+        {
+            var shfi = new SHFILEINFO();
+            uint flags = SHGFI_ICON | SHGFI_SMALLICON;
+            if (!isDirectory && !File.Exists(filePath))
+            {
+                flags |= SHGFI_USEFILEATTRIBUTES;
+            }
+            IntPtr result = SHGetFileInfo(filePath, 0, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
+            if (shfi.hIcon != IntPtr.Zero)
+            {
+                try
+                {
+                    ImageSource imageSource = Imaging.CreateBitmapSourceFromHIcon(
+                        shfi.hIcon,
+                        Int32Rect.Empty,
+                        BitmapSizeOptions.FromEmptyOptions());
+                    imageSource.Freeze();
+                    return imageSource;
+                }
+                finally
+                {
+                    DestroyIcon(shfi.hIcon);
+                }
+            }
+            return null;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DestroyIcon(IntPtr hIcon);
+        #endregion
+
         private string? GetSelectedPath()
         {
             if (FileExplorerTreeView.SelectedItem is TreeViewItem selectedItem && selectedItem.Tag is string path)

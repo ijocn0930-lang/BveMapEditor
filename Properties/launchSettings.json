@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "BveMapEditor": {
+      "commandName": "Project",
+      "debugEngines": "managed"
+    }
+  }
+}
