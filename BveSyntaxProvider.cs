@@ -131,7 +131,7 @@ namespace BveMapEditor
 
 
                 //分岐通過音
-                new BveCompletionData("JointNoise.Change();","フランジ音を設定します"),
+                new BveCompletionData("JointNoise.Play();","フランジ音を設定します"),
 
                 //フランジ音
                 new BveCompletionData("FlangeNoise.Change();","フランジ音を設定します"),

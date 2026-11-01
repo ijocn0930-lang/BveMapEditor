@@ -1,0 +1,308 @@
+BveTs Map 2.02:shift-jis
+
+###########################################
+#
+# パーサー解析テストマップファイル
+# パーサー側エラーなし は 自作テキストエディタのパーサー側がエラーを出すべきところをエラーなしと誤判定されていることをさします 
+# パーサー側エラー誤検知 は 自作テキストエディタのパーサー側がエラーとして検知するべきではないところを誤検知されていることをさします
+# パーサー側エラー誤検知解消 は 修正により誤検知を解消したことをさします
+# パーサー側エラーなし修正 は エラーを検知するように修正したことをさします
+# パーサー側文字修正 は エラー文字修正したことをさします
+# パーサー側エラー検知済み は 自作テキストエディタのパーサー側がエラーとして検知するようにしたことをさします
+# Bve5/BVE6 のエラー検知部分と同じかそれより厳格にする
+#
+# エラー検知するようにした部分は誤認回避のためコメントアウトしている場合があります。その場合はスルーしてください。
+#
+###########################################
+
+Structure.Load('Structures.csv');
+Sound.Load('Sounds.csv');
+Sound3D.Load('Sounds3D.csv');
+Station.Load('Stations.csv');
+Signal.Load('Signals.csv');
+
+#-100; # 距離程をマイナスにすることはできません 0以上の実数である必要があります パーサー側エラーを検知済み  0以上の実数である必要があります BVE5/BVE6: エラーなし
+
+0;
+$abc = 4.5; # $abcに4.5を代入する
+
+Track['Tack1'].X.Interpolate($abc, 0); # (4.5, 0);と対価です。
+Track['Tack2'].X.Interpolate(-$abc, 0); # (-4.5, 0);と対価です。 パーサー側エラー誤検知解消
+
+0 + 300; #計算結果300
+Track['Tack1'+'234'].X.Interpolate($abc, 0); # Track1234と対価です
+
+$def = 'Hello' + 'World'; # HelloWorldと対価です この変数はどこにも使用されていません パーサー側エラーなし
+$ghi = 1 + 2; # 3と対価です この変数はどこにも使用されていません パーサー側エラーなし
+$xyz; # $gyzには変数の宣言がありません。 BVE5/BVE6:The name '$xyz' does not exist パーサー側エラーなし
+#&yuw; # 変数の最初に$以外は使えません BVE5/BVE6:Invalid character: '&'. パーサー側エラー検知済み Invalid character: '&'.
+$123; # 変数の宣言がありません。  BVE5/BVE6:The name '$123' does not exist パーサー側エラーなし
+#$hello = hello; # 文字列であれば引用符で囲まなければなりません。 BVE5/BVE6:The name 'hello' does not exist パーサー側文字修正 名前は存在しません
+#$bgw = 'wall' * 2; # 文字列に対して使える演算子は+のみです。  BVE5/BVE6: 算術計算でオーバーフローまたはアンダーフローが発生しました パーサー側文字修正 算術計算でオーバーフローまたはアンダーフローが発生しました
+$ = 123; #変数が不明です。 Bve5/BVE6: エラーなし パーサー側エラーなし
+
+#Track['Track3'].Y.Interpolate(100 * 25 / 1000, 0); #2.5m
+#Track['Track4'].Cant.SetGauge($track); # $trackは宣言されていません。 BVE5/BVE6:The name '$track' does not exist パーサー側エラー検知
+#Track['Track5'].X.Interpolate($123, 0); # $123は上にありますが、代入されていません。BVE5/BVE6:The name '$track' does not exist パーサー側エラー検知
+#Track['Track6'].Cant.SetGauge('$abc'); # 引用符をつけたら変数ではなく文字列とみなす [エラー] Track.Cant.SetGauge の第 1 引数には数値を指定してください（値: ''$abc''）。  BVE5/BVE6: 入力文字列の形式が正しくありません 対応不要
+# 変数がどこにも使用されていないときはエラーを出すようにします。
+# 変数参照されているときに宣言されていない場合はエラーを出すようにします。
+
+#100 + 2 ( 2 * 4 ); #演算子不足 test BVE5/BVE6: Syntax error, expected: dot, [, semi, +, -, *, /, %, <, >, <=, >=, ==, !=, &&, ||, ), comma, ]	パーサー側エラー検知
+#200 - 300; #距離程のみ計算結果をマイナスにすることはできません。0以上の実数である必要があります。パーサー側エラーを検知済み 0以上の実数である必要があります BVE5/BVE6: エラーなし
+#220 + 2 * (300 / 2 ); # 正しい計算です
+
+#Track['Track5'].X.Interpolate(sin(0.3), 0); # BVE5/BVE6: エラーなし パーサー側[エラー] Track.X.Interpolate の第 1 引数には数値を指定してください（値: 'sin ( 0.3 )'）。
+#Track['Track6'].X.Interpolate(rand(0.3), 0); # BVE5/BVE6: エラーなし パーサー側[エラー] Track.X.Interpolate の第 1 引数には数値を指定してください（値: 'rand ( 0.3 )'）。
+
+#4,294,967,295; # 距離程にカンマを付けることはできません BVE5/BVE6: Syntax error, expected: dot, [, semi, +, -, *, /, %, <, >, <=, >=, ==, !=, &&, ||, ), comma, ]	パーサー側エラー検知 距離程にカンマを付けることはできません
+#4294967295; # Int32整数を超えていました。 BVE5/BVE6: Cannot convert literal 4294967295 to type Int32. パーサー側エラーなし
+2147483647; # Int32整数上限 パーサー側エラーなし BVE5/BVE6: エラーなし
+#2147483648; # Int32整数上限超過 BVE5/BVE6: Cannot convert literal 2147483648 to type Int32. パーサー側エラーなし
+999;
+#Gradient.BeginTransition();
+1000;
+#Gradient.Begin(2147483647); //Int32整数上限 パーサー側エラーなし BVE5/BVE6: エラーなし
+
+1999;
+#Gradient.BeginTransition();
+2000;
+#Gradient.Begin(2147483648); //Int32整数上限超過 BVE5/BVE6: Cannot convert literal 2147483648 to type Int32. パーサー側エラーなし
+
+###################################################
+#
+# BeginTransition
+# 
+# Curve.Begin(radius, cant);
+# Curve.BeginCircular(radius, cant);
+# Curve.Begin(radius);
+# Curve.End();
+#
+# 平面曲線の円曲線を現在の距離程から開始します。カントを設定する場合は、この手前に Curve.BeginTransition を記述する必要があります。
+# radius: 曲線半径 [m] (正: 右曲線, 負: 左曲線) cant: カント [m]
+# Gradient.Begin(gradient); / Gradient.BeginConst(gradient); も Gradient.BeginTransition();が必須
+# gradient 勾配 [‰]
+#
+# Track[trackKey].Cant.Begin(cant);
+#
+# 他軌道のカントの逓減を現在の距離程で終了し、カントを一定に保ちます。
+#
+# trackKey: 軌道名 (任意の文字列) cant: カント [m] (正: 右に傾ける, 負: 左に傾ける)
+# 
+#
+# Endに対して BeginTransitionが必要 (Cantがない場合を除く)
+# Track[''].Cant.Begin();系も同じ
+#
+################################################
+900;
+Track['Track1'].Cant.SetGauge(1.435); # <--これを忘れるとこれ以降の他軌道キー (Track['Track1'] の'Track1' がキーまたはディレクトリに存在しませんでした
+
+950;
+###Curve.BeginTransition();
+1000;
+#Curve.Begin(1000, 0.1); # CantがあるのにCurve.BeginTransition();がない。 BVE5/BVE6: 'BeginTransition' is required before 'Begin'. パーサー側エラー検知 'BeginTransition' is required before 'Begin'. 
+1100;
+###Curve.BeginTransition();
+1150;
+#Curve.End(); # カントがある場合はEndの前に Curve.BeginTransition(); がないと直線でもカントがついた状態になる  パーサー側エラー検知 'BeginTransition' is required before 'Begin'. 
+
+1200;
+###Track['Track1'].Cant.BeginTransition();
+1250;
+Track['Track1'].Cant.Begin(0.1);  # CantがあるのにCant.BeginTransition();がない。 BVE5/BVE6: 'BeginTransition' is required before 'Begin'. パーサー側エラーなし
+1300;
+###Track['Track1'].Cant.BeginTransition();
+1350;
+Track['Track1'].Cant.End(); # カントがある場合はEndの前に Cant.BeginTransition(); がないとカントがついた状態になる  パーサー側エラーなし BVE5/BVE6: エラーなし
+
+
+
+
+2000;
+Curve.Begin(1000); # Cantは0と対価です。このため Curve.BeginTransition();は不要です
+2030;
+Curve.End(); # カントがないのでこの場合は Curve.BeginTransition();は不要です
+
+2100;
+#Gradient.BeginTransition();
+2200;
+#Gradient.Begin(20); # Gradient.BeginTransition();が必要です BVE5/BVE6: 'BeginTransition' is required before 'Begin'. パーサー側エラー検知 'BeginTransition' is required before 'Begin'. 
+2400;
+#Gradient.BeginTransition();
+2500;
+#Gradient.End(); # Gradient.BeginTransition();が必要です BVE5/BVE6: 'BeginTransition' is required before 'End'. パーサー側エラー検知 'BeginTransition' is required before 'Begin'. 
+
+### Track[''].Cant.Begin();のような他軌道のこう配 Gradient.BeginTransition();などはありません
+
+### エラーは検知しませんが、Curve.BeginTransition(); と Gradient.BeginTransition(); のいずれかを2か所連続して配置できません
+
+3950;
+#Curve.BeginTransition();
+4000;
+#Curve.Begin(1000, 0.1);
+4100;
+#Curve.BeginTransition(); # エラーは発生しませんが、非推奨です。
+4120;
+#Curve.BeginTransition(); # エラーは発生しませんが、非推奨です。
+4150;
+#Curve.End();
+
+4300;
+Gradient.BeginTransition();
+4400;
+Gradient.Begin(20); 
+4500;
+Gradient.BeginTransition(); # エラーは発生しませんが、非推奨です。
+4510;
+#Gradient.BeginTransition(); # エラーは発生しませんが、非推奨です。
+4600;
+Gradient.End(); 
+
+
+###################################################
+#
+# カントを付ける場合は事前に Curve.SetGauge(); / Curve.Gauge(); を設定しないといけません
+# 他軌道も同様です: Track[''].Cant.SetGauge();
+#
+#
+################################################
+5000;
+Curve.SetGauge(1.435); # 曲線開始前に設定する　この構文は数か所設置可能 値は制限しませんが、Int32以下である必要があります
+
+5500;
+Curve.BeginTransition();
+5550;
+Curve.Begin(500, 0.135);
+5600;
+Curve.BeginTransition();
+5650;
+Curve.End();
+
+6000;
+##Curve.SetGauge(1.435); # わざとコメントアウトする。すると、あら不思議、カントが消えました！！なぜなら、カントを角度に換算するために必要なのです。
+
+6500;
+Curve.BeginTransition();
+6550;
+Curve.Begin(500, 0.135); # Curve.Begin(500, 0); と同等です。 BVE5/BVE6: エラーなし　パーサー側エラーなし
+6600;
+Curve.BeginTransition();
+6650;
+Curve.End();
+
+### 以下のような書き方は問題ありません-
+
+6500;
+Curve.BeginTransition();
+6550;
+Curve.Begin(500, 0.135);
+Curve.BeginTransition();
+6650;
+Curve.End();
+
+### 以下のような書き方は問題ありませんが、この場でカントと曲線を突然開始/終了するため運転台が大きく揺れます
+### 警告は不要です。スルーしてください
+
+
+6500;
+Curve.BeginTransition();
+Curve.Begin(500, 0.135);
+6600;
+Curve.BeginTransition();
+Curve.End();
+
+### 以下のような書き方は問題ありませんが、カントと曲線を突然開始するため運転台が大きく揺れます
+
+6500;
+#Curve.BeginTransition();
+6550;
+#Curve.BeginTransition();
+#Curve.Begin(500, 0.135);
+6650;
+#Curve.End(); # Curve.BeginTransition();がない
+
+###################################################
+#
+# CabIlluminance.Interpolate(); / CabIlluminance.Set(); の注意点
+#
+################################################
+
+# 以下のような書き方なら問題ありません
+
+10;
+CabIlluminance.Interpolate(0);
+15;
+CabIlluminance.Interpolate(1);
+
+
+# 問題のある書き方
+# BVE5/BVE6: '264' の値は 'alpha' に対して有効ではありません。 'alpha' は 0 以上または 255 以下でなければなりません。
+# 読み込み時はエラーになりませんが、自列車がこの地点を通過するとエラーになります
+# 原因はオーバーシュートのせいです 将来修正予定らしいですが、動きがない…
+
+17;
+CabIlluminance.Interpolate(0);
+17.5;
+CabIlluminance.Interpolate(1);
+
+
+# 対策
+20;
+CabIlluminance.Interpolate(0);
+21.5;
+CabIlluminance.Interpolate(0.8); # このあたりまでならオーバーシュートしない オーバーシュートしない範囲の計算がわかりません。
+
+
+###################################################
+#
+# パーサー側バグ
+#
+#
+################################################
+
+bsv #コマンドルールに存在しない単語　パーサー側エラーなし BVE5/BVE6: Syntax error, expected: dot, [, semi, +, -, *, /, %, <, >, <=, >=, ==, !=, &&, ||, ), comma, ]
+bsv; #コマンドルールに存在しない単語　パーサー側エラーなし BVE5/Bve6: The name 'bsv' dose not exist.
+Track; #ハイライトはxshdにあるが、コマンドルールに存在しない単語　パーサー側エラーなし BVE5/Bve6: 存在しないフィールドにアクセスしようとしました
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

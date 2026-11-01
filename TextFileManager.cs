@@ -143,14 +143,41 @@ public partial class MainWindow : Window
                 // ウィンドウが確実に描画されるよう少し待機
                 await Task.Delay(50);
 
-                // 4. バックグラウンドスレッドでファイル読み込みとBOM/エンコーディング判定を実行
+                // 4. バックグラウンドスレッドでファイル読み込みとエンコーディング判定を実行
                 string fileContent;
                 var loadResult = await Task.Run(() =>
                 {
-                    using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    using var sr = new StreamReader(fs, true);
-                    string content = sr.ReadToEnd();
-                    return (Content: content, Encoding: sr.CurrentEncoding);
+                    byte[] bytes;
+                    using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        bytes = new byte[fs.Length];
+                        int totalBytesRead = 0;
+                        int bytesRead;
+                        while (totalBytesRead < bytes.Length && (bytesRead = fs.Read(bytes, totalBytesRead, bytes.Length - totalBytesRead)) > 0)
+                        {
+                            totalBytesRead += bytesRead;
+                        }
+                    }
+
+                    // 冒頭のサンプルからエンコーディングを判定
+                    int sampleSize = Math.Min(bytes.Length, 4096);
+                    byte[] sample = bytes.Take(sampleSize).ToArray();
+                    Encoding enc = DetectEncodingFromSample(sample);
+
+                    string content;
+                    try
+                    {
+                        content = enc.GetString(bytes);
+                    }
+                    catch
+                    {
+                        // デコードに失敗した場合はShift-JIS（CP932）にフォールバック
+                        var sjis = Encoding.GetEncoding(932);
+                        content = sjis.GetString(bytes);
+                        enc = sjis;
+                    }
+
+                    return (Content: content, Encoding: enc);
                 });
 
                 fileContent = loadResult.Content;
@@ -279,7 +306,7 @@ public partial class MainWindow : Window
                 UpdateTitle();
                 RunSyntaxCheck();
                 UpdateEditMenuState();
-
+                UpdateEncodingStatus();
                 var targetEditor = ActiveEditor ?? MapTextEditor;
                 string openedFilePath = filePath;
                 await Dispatcher.InvokeAsync(() =>
@@ -319,6 +346,7 @@ public partial class MainWindow : Window
         // ファイル書き込み処理
         private void SaveFile(string filePath, Encoding? forcedEncoding = null, bool useDialogIfNull = true)
         {
+            App.LogOperation($"ファイルを保存しようとしています: {filePath}");
             try
             {
                 // AvalonEdit からテキストを取得
@@ -362,6 +390,7 @@ public partial class MainWindow : Window
                 // 保存に成功したら現在のファイルパス・エンコーディング情報を更新
                 currentFilePath = filePath;
                 currentFileEncoding = encodingToUse;
+                UpdateTitle();
                 // 上書き保存だった場合は、特定ファイルのエンコーディング設定として記憶して次回以降の確認を省略できるようにする
                 try
                 {
@@ -385,6 +414,9 @@ public partial class MainWindow : Window
                 }
                 isModified = false;
                 UpdateTitle();
+                isModified = false;
+                UpdateEditMenuState();
+                MessageBox.Show($"ファイルを保存しました:\n{filePath}", "保存完了", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {

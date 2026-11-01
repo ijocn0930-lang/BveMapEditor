@@ -22,8 +22,6 @@ namespace BveMapEditor
         private readonly TextEditor _editor;
         private readonly AppSettings _settings; // ★ 設定オブジェクトを受け取る
         // ★ ウィンドウを閉じても記憶しておくための静的（static）フィールド
-        private static string _lastSearchQuery = string.Empty;
-        private static string _lastReplaceQuery = string.Empty;
         internal SearchWindow(TextEditor editor, AppSettings settings)
         {
             InitializeComponent();

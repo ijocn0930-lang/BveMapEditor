@@ -1,15 +1,16 @@
-﻿using ICSharpCode.AvalonEdit.CodeCompletion;
+﻿using BveMapParserWorker;
+using ICSharpCode.AvalonEdit.CodeCompletion;
 using ICSharpCode.AvalonEdit.Document;
 using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using BveMapParserWorker;
 
 namespace BveMapEditor
 {
@@ -42,9 +43,12 @@ namespace BveMapEditor
     /// </summary>
     public partial class MainWindow : Window
     {
+        // ★ 接続先のパイプサーバーのプロセスIDを取得するためのWin32 API
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle hPipe, out uint serverProcessId);
         private string? _currentProjectPath = null; // ★ 現在開いている .bveproj のパス
-        private Process? _parserWorkerProcess;
-        private const string PipeName = "BveMapParserPipe";
+        private Process? _parserWorkerProcess; //プロセス
+        private const string PipeName = "BveMapParserPipe"; //パイプ通信ネーム
 
         // アプリ起動時（MainWindowのコンストラクタなど）にワーカーを起動
         private void StartParserWorker()
@@ -91,13 +95,30 @@ namespace BveMapEditor
 
             try
             {
-                if (_parserWorkerProcess != null && !_parserWorkerProcess.HasExited)
+                if (_parserWorkerProcess != null)
                 {
-                    _parserWorkerProcess.Kill();
+                    if (!_parserWorkerProcess.HasExited)
+                    {
+                        // プロセスに終了を試みる
+                        _parserWorkerProcess.Kill();
+
+                        // 終了したかどうかを一定時間（例: 2000ミリ秒）監視
+                        bool exited = _parserWorkerProcess.WaitForExit(2000);
+                        if (!exited || !_parserWorkerProcess.HasExited)
+                        {
+                            // 終了に失敗した場合はゾンビプロセスを防ぐため、FailFastで強制クラッシュさせる
+                            Environment.FailFast("パーサーワーカープロセスの終了に失敗しました。ゾンビプロセス防止のためアプリケーションを強制終了します。");
+                        }
+                    }
                     _parserWorkerProcess.Dispose();
+                    _parserWorkerProcess = null;
                 }
             }
-            catch { }
+            catch (Exception ex) when (ex is not OutOfMemoryException && ex is not StackOverflowException)
+            {
+                // 万が一例外が発生した場合も、ゾンビプロセスを放置せず強制クラッシュさせる
+                Environment.FailFast($"パーサーワーカー終了処理中に予期せぬエラーが発生しました: {ex.Message}", ex);
+            }
             base.OnClosed(e);
         }
 
@@ -111,17 +132,44 @@ namespace BveMapEditor
                     try
                     {
                         using var clientStream = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-                        // 接続タイムアウトを1秒に設定[cite: 7]
+                        // 接続タイムアウトを1秒に設定
                         clientStream.Connect(1000);
+                        // ★ 接続先が正規のワーカープロセスであるかを検証する
+                        if (GetNamedPipeServerProcessId(clientStream.SafePipeHandle, out uint serverProcessId))
+                        {
+                            try
+                            {
+                                using var serverProc = Process.GetProcessById((int)serverProcessId);
+                                string expectedWorkerPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "BveMapParserWorker.exe");
+                                string actualWorkerPath = serverProc.MainModule?.FileName ?? string.Empty;
+
+                                // 起動中のワーカープロセスIDと一致するか、または実行ファイルパスが完全に一致するか検証
+                                bool isValidProcess = (_parserWorkerProcess != null && serverProc.Id == _parserWorkerProcess.Id) ||
+                                                      string.Equals(actualWorkerPath, expectedWorkerPath, StringComparison.OrdinalIgnoreCase);
+
+                                if (!isValidProcess)
+                                {
+                                    throw new UnauthorizedAccessException("接続先のパイプサーバーが正規のワーカープロセスではありません（不正なプロセスの検知）。");
+                                }
+                            }
+                            catch (Exception ex) when (ex is not UnauthorizedAccessException)
+                            {
+                                throw new UnauthorizedAccessException($"パイプサーバーの検証中にエラーが発生しました: {ex.Message}");
+                            }
+                        }
+                        else
+                        {
+                            throw new UnauthorizedAccessException("パイプサーバーのプロセスIDを取得できませんでした。");
+                        }
                         using var writer = new StreamWriter(clientStream, Encoding.UTF8, leaveOpen: true);
                         using var reader = new StreamReader(clientStream, Encoding.UTF8, leaveOpen: true);
-                        // リクエスト作成＆送信[cite: 7]
+                        // リクエスト作成＆送信
                         var request = new { Text = text, BaseDirectory = baseDirectory };
                         string jsonRequest = JsonSerializer.Serialize(request);
                         writer.WriteLine(jsonRequest);
                         writer.Flush();
 
-                        // 結果を受信[cite: 7]
+                        // 結果を受信
                         string? jsonResponse = reader.ReadLine();
                         if (!string.IsNullOrEmpty(jsonResponse))
                         {
@@ -132,11 +180,11 @@ namespace BveMapEditor
                     {
                         App.LogOperation($"パイプ通信エラー (試行 {retry + 1}): {ex.Message}");
 
-                        // 1回目の失敗時、もしワーカープロセスが落ちていれば再起動を試みる[cite: 7]
+                        // 1回目の失敗時、もしワーカープロセスが落ちていれば再起動を試みる
                         if (retry == 0)
                         {
                             RestartParserWorker();
-                            await Task.Delay(500); // 少し待ってからリトライ[cite: 7]
+                            await Task.Delay(500); // 少し待ってからリトライ
                         }
                     }
                 }
@@ -265,6 +313,7 @@ namespace BveMapEditor
             tab.Tag = info;
             EditorTabControl.Items.Add(tab);
             EditorTabControl.SelectedItem = tab;
+            UpdateEncodingStatus();
         }
         private static TabDocumentInfo? GetTabInfo(TabItem? tab)
         {
@@ -450,6 +499,8 @@ namespace BveMapEditor
         private static Encoding DetectEncodingFromSample(byte[] sample)
         {
             if (sample == null || sample.Length == 0) return Encoding.Default;
+
+            // 1. BOMのチェック
             if (sample.Length >= 3 && sample[0] == 0xEF && sample[1] == 0xBB && sample[2] == 0xBF)
             {
                 return new UTF8Encoding(false);
@@ -466,14 +517,8 @@ namespace BveMapEditor
             {
                 return Encoding.UTF32;
             }
-            try
-            {
-                var utf8Strict = new UTF8Encoding(false, true);
-                utf8Strict.GetString(sample);
-                return Encoding.UTF8;
-            }
-            catch (DecoderFallbackException) { }
 
+            // 2. UTF-16のヒューリスティック判定
             int zeroCount = sample.Count(b => b == 0);
             if (zeroCount > sample.Length / 10)
             {
@@ -488,15 +533,28 @@ namespace BveMapEditor
                 if (zerosAtOdd > zerosAtEven) return Encoding.Unicode;
                 return Encoding.BigEndianUnicode;
             }
+            // 3. UTF-8としての厳密な妥当性チェック
+            // Shift-JISの日本語バイト列はUTF-8のルールに違反するため、ここで例外が発生します。
             try
             {
-                var sjis = Encoding.GetEncoding(932, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
-                sjis.GetString(sample);
-                return sjis;
+                var utf8Strict = new UTF8Encoding(false, true);
+                utf8Strict.GetString(sample);
+                return new UTF8Encoding(false); // 例外なく読めれば UTF-8（BOMなし）
             }
-            catch { }
-
-            return Encoding.Default;
+            catch (DecoderFallbackException)
+            {
+                // UTF-8として不正なバイト列（＝Shift-JISなどの日本語が含まれている）場合
+            }
+            // 3. BOMがないファイルは、BVEマップファイルの仕様および誤判定防止のため
+            //    デフォルトで Shift-JIS (CP932) として読み込む
+            try
+            {
+                return Encoding.GetEncoding(932);
+            }
+            catch
+            {
+                return Encoding.Default;
+            }
         }
         private CurrentLineHighlightRenderer GetOrCreateCurrentLineRenderer(ICSharpCode.AvalonEdit.TextEditor editor)
         {
@@ -553,7 +611,8 @@ namespace BveMapEditor
         {
             isInitializing = true;
             InitializeComponent();
-
+            // ★ 管理者権限で実行されているかをチェックし、セキュリティ低下の警告を表示
+            CheckAdministratorWarning();
             // ★ パーサーワーカープロセス（別プロセス）を起動
             StartParserWorker();
 
@@ -671,7 +730,32 @@ namespace BveMapEditor
             RunSyntaxCheckImmediate();
             isInitializing = false;
         }
-
+        // 管理者権限での実行を検知して警告するメソッド
+        private void CheckAdministratorWarning()
+        {
+            try
+            {
+                var identity = WindowsIdentity.GetCurrent();
+                var principal = new WindowsPrincipal(identity);
+                if (principal.IsInRole(WindowsBuiltInRole.Administrator))
+                {
+                    App.LogOperation("警告: アプリケーションが管理者権限で実行されています。");
+                    MessageBox.Show(
+                        this,
+                        "【セキュリティ警告】\n\n" +
+                        "現在、BVE Map Editor が管理者権限で実行されています。\n" +
+                        "管理者権限での実行はシステム全体のセキュリティリスクを高める可能性があります。\n" +
+                        "特別な理由がない限り、通常の一般ユーザー権限で実行してください。",
+                        "セキュリティの警告",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"管理者権限チェックエラー: {ex.Message}");
+            }
+        }
         private CompletionWindow? completionWindow;
 
         private void ApplyWindowSettings()
@@ -771,11 +855,13 @@ namespace BveMapEditor
                     }
 
                     // タブ切替時に即座にパース＆波線更新
-                    UpdateSyntaxCheckImmediateForEditor(editor, targetPath);
+                    // ★ タブ切替時は即時パースではなく、キャンセル処理付きの RunSyntaxCheck() を経由させることで競合を防ぐ
+                    RunSyntaxCheck();
                     // ★ タブ切り替え直後にビューを強制再描画してハイライトを確実に表示
                     editor.TextArea.TextView.Redraw();
                     // ★ 追加：プロジェクト読み込み・復元完了後にタイトルバーを更新
                     UpdateTitle();
+                    UpdateEncodingStatus();
                 }
             }
             catch
@@ -1177,6 +1263,51 @@ namespace BveMapEditor
                 MenuErrorSelectInTree.IsEnabled = hasValidFile;
                 MenuErrorOpenInExplorer.IsEnabled = hasValidFile;
             }
+        }
+        private void UpdateEncodingStatus()
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (FileEncodingText == null) return;
+                try
+                {
+                    Encoding? enc = null;
+
+                    // アクティブなタブの情報を取得
+                    var activeInfo = GetTabInfo(EditorTabControl?.SelectedItem as TabItem);
+                    if (activeInfo != null)
+                    {
+                        enc = activeInfo.FileEncoding;
+                    }
+                    else
+                    {
+                        enc = currentFileEncoding;
+                    }
+
+                    if (enc != null)
+                    {
+                        // エンコーディング名を見やすく整形
+                        string encName = enc.WebName.ToLower() switch
+                        {
+                            "utf-8" => (enc is UTF8Encoding utf8 && utf8.GetPreamble().Length > 0) ? "UTF-8 (BOM付)" : "UTF-8",
+                            "shift_jis" or "sjis" or "cp932" => "Shift-JIS",
+                            "utf-16le" or "unicode" => "UTF-16 LE",
+                            "utf-16be" => "UTF-16 BE",
+                            _ => enc.EncodingName
+                        };
+                        FileEncodingText.Text = encName;
+                    }
+                    else
+                    {
+                        // デフォルト（無題タブなど）
+                        FileEncodingText.Text = "UTF-8";
+                    }
+                }
+                catch
+                {
+                    FileEncodingText.Text = string.Empty;
+                }
+            });
         }
     }
 }

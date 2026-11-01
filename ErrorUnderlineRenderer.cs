@@ -36,10 +36,7 @@ namespace BveMapEditor
                 _editor.Dispatcher.InvokeAsync(() =>
                 {
                     var textView = _editor.TextArea?.TextView;
-                    if (textView != null)
-                    {
-                        textView.Redraw();
-                    }
+                    textView?.Redraw();
                 }, System.Windows.Threading.DispatcherPriority.Loaded);
             }
         }
@@ -98,7 +95,7 @@ namespace BveMapEditor
             }
         }
 
-        private void DrawWave(DrawingContext dc, Brush brush, Point start, Point end)
+        private static void DrawWave(DrawingContext dc, Brush brush, Point start, Point end)
         {
             double waveHeight = 3.0;
             double waveWidth = 7.0;

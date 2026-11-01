@@ -50,12 +50,11 @@ namespace BveMapEditor
             string autoSavePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "autosave.bveproj");
 
             // ★ 日本語パスが \uXXXX にエスケープされないように設定
-            var options = new JsonSerializerOptions
+            string json = JsonSerializer.Serialize(projectData, new JsonSerializerOptions
             {
                 WriteIndented = true,
                 Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-            };
-            string json = JsonSerializer.Serialize(projectData, options);
+            });
             File.WriteAllText(autoSavePath, json, Encoding.UTF8);
         }
 
@@ -247,26 +246,43 @@ namespace BveMapEditor
                     InitializeEditor(editor);
                     string header = "無題";
                     string? filePath = tabInfo.FilePath;
-
+                    Encoding? fileEncoding = null; // ★ 読み込んだエンコーディングを保持する変数
                     // ファイルが存在する場合はディスクから読み込む
                     if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
                     {
                         try
                         {
-                            string[] lines = await ReadAllLinesWithAnsiFallbackAsync(filePath);
-                            editor.Text = string.Join(Environment.NewLine, lines);
+                            // ★ バイト配列として読み込み、エンコーディングを判定して文字列化する
+                            byte[] bytes = await File.ReadAllBytesAsync(filePath);
+                            int sampleSize = Math.Min(bytes.Length, 4096);
+                            byte[] sample = bytes.Take(sampleSize).ToArray();
+                            fileEncoding = DetectEncodingFromSample(sample);
+                            string? text;
+                            try
+                            {
+                                text = fileEncoding.GetString(bytes);
+                            }
+                            catch
+                            {
+                                fileEncoding = Encoding.GetEncoding(932);
+                                text = fileEncoding.GetString(bytes);
+                            }
+
+                            editor.Text = text;
                             header = Path.GetFileName(filePath);
                         }
                         catch
                         {
                             editor.Text = string.Empty;
                             filePath = null;
+                            fileEncoding = null;
                         }
                     }
                     else
                     {
                         editor.Text = string.Empty;
                         filePath = null;
+                        fileEncoding = null;
                     }
 
                     var tab = new TabItem { Header = header, Content = editor };
@@ -275,6 +291,7 @@ namespace BveMapEditor
                         Editor = editor,
                         FilePath = filePath,
                         IsModified = false,
+                        FileEncoding = fileEncoding, // ★ 判定したエンコーディングを TabDocumentInfo に設定
                         TabItem = tab
                     };
                     tab.Tag = docInfo;
@@ -296,6 +313,7 @@ namespace BveMapEditor
                 }
                 // ★ 追加：プロジェクト読み込み・復元完了後にタイトルバーを更新
                 UpdateTitle();
+                UpdateEncodingStatus();
             }
         }
         // テキストエディタに対する共通の初期化処理
@@ -321,6 +339,9 @@ namespace BveMapEditor
             editor.TextChanged += MapTextEditor_TextChanged;
             editor.TextArea.TextEntered += MapTextEditor_TextEntered;
             editor.TextArea.TextEntering += MapTextEditor_TextEntering;
+
+            // ★ 追加：Ctrl + マウスホイールによるフォントサイズ変更イベントを登録
+            editor.PreviewMouseWheel += MapTextEditor_PreviewMouseWheel;
 
             var cm = new ContextMenu();
             cm.Items.Add(new MenuItem() { Header = "元に戻す(_U)", Command = ApplicationCommands.Undo });

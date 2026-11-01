@@ -199,7 +199,9 @@ namespace BveMapEditor
                     availPhys = memStatus.ullAvailPhys;
                 }
             }
-            catch { }
+            catch { 
+                //取得が失敗しても何もしない
+                    }
 
             if (totalPhys > 0)
             {

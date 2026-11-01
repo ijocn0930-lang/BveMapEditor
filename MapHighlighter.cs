@@ -21,11 +21,9 @@ namespace BveMapEditor
                 string xshdPath = Path.Combine(baseDir, "BveMap.xshd");
                 if (File.Exists(xshdPath))
                 {
-                    using (var stream = File.OpenRead(xshdPath))
-                    using (var reader = XmlReader.Create(stream))
-                    {
-                        editor.SyntaxHighlighting = HighlightingLoader.Load(reader, HighlightingManager.Instance);
-                    }
+                    using var stream = File.OpenRead(xshdPath);
+                    using var reader = XmlReader.Create(stream);
+                    editor.SyntaxHighlighting = HighlightingLoader.Load(reader, HighlightingManager.Instance);
                 }
                 else
                 {

@@ -39,18 +39,17 @@ namespace BveMapEditor
                 currentSettings.Save();
             }
         }
-        // Ctrl + マウスホイールによるフォントサイズの拡大・縮小（アクティブなエディタを対象）
+        // Ctrl + マウスホイールによるフォントサイズの拡大・縮小（すべてのタブのエディタに一括反映）
         private void MapTextEditor_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
         {
             // Ctrlキーが押されているか確認
             if (System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control)
             {
-                // アクティブタブのエディタ（なければ既定の MapTextEditor）を取得
-                var editor = ActiveEditor ?? MapTextEditor;
-                if (editor == null) return;
+                // 基準となる現在サイズ（アクティブエディタ、なければ MapTextEditor）
+                var activeEditor = ActiveEditor ?? MapTextEditor;
+                if (activeEditor == null) return;
 
-                double currentSize = editor.FontSize;
-
+                double currentSize = activeEditor.FontSize;
                 if (e.Delta > 0)
                 {
                     // 上方向（拡大）: 最大 72 まで
@@ -68,15 +67,26 @@ namespace BveMapEditor
                     }
                 }
 
-                // エディタのフォントサイズを更新
-                editor.FontSize = currentSize;
+                // ★ 開いているすべてのタブのエディタ、および初期エディタのフォントサイズを一括で更新する
+                if (EditorTabControl != null)
+                {
+                    foreach (var item in EditorTabControl.Items)
+                    {
+                        if (item is TabItem ti && ti.Content is ICSharpCode.AvalonEdit.TextEditor tabEditor)
+                        {
+                            tabEditor.FontSize = currentSize;
+                        }
+                    }
+                }
+
+                // 万が一初期の MapTextEditor がタブ外にある場合のフォールバック
+                MapTextEditor?.FontSize = currentSize;
 
                 // 設定オブジェクト側も更新して保存
                 currentSettings.FontSize = currentSize;
-                // フォントファミリ名もアクティブエディタから採る
                 try
                 {
-                    currentSettings.FontFamilyName = editor.FontFamily.Source;
+                    currentSettings.FontFamilyName = activeEditor.FontFamily.Source;
                 }
                 catch
                 {
@@ -88,7 +98,7 @@ namespace BveMapEditor
                 e.Handled = true;
             }
         }
-        // OSがダークモードかどうかを判定するヘルパー
+            // OSがダークモードかどうかを判定するヘルパー
         private bool IsSystemDarkMode()
         {
             try
@@ -166,12 +176,8 @@ namespace BveMapEditor
             {
                 editor.FontFamily = new FontFamily(currentSettings.FontFamilyName);
                 editor.FontSize = currentSettings.FontSize;
-                // ★折り返し設定を反映
                 editor.WordWrap = currentSettings.WordWrap;
-                if (MenuWordWrap != null)
-                {
-                    MenuWordWrap.IsChecked = currentSettings.WordWrap;
-                }
+                MenuWordWrap?.IsChecked = currentSettings.WordWrap;
             }
             catch
             {
@@ -181,14 +187,8 @@ namespace BveMapEditor
                 editor.WordWrap = false;
             }
             // ★ メニューのチェック状態に設定を反映
-            if (MenuAutoCompletion != null)
-            {
-                MenuAutoCompletion.IsChecked = currentSettings.EnableAutoCompletion;
-            }
-            if (MenuAllowOverwriteToggle != null)
-            {
-                MenuAllowOverwriteToggle.IsChecked = currentSettings.AllowOverwriteToggle;
-            }
+            MenuAutoCompletion?.IsChecked = currentSettings.EnableAutoCompletion;
+            MenuAllowOverwriteToggle?.IsChecked = currentSettings.AllowOverwriteToggle;
             // ★ テーマの適用
             ApplyTheme(currentSettings.Theme);
         }

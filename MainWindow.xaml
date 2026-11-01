@@ -52,7 +52,6 @@
                 <Separator />
                 <MenuItem Header="検索(_F)..." Click="MenuSearch_Click" InputGestureText="Ctrl+F" />
             </MenuItem>
-            <!-- 「設定」メニュー -->
             <MenuItem Header="設定">
                 <MenuItem Header="フォント設定..." Click="MenuFontSettings_Click" />
                 <MenuItem x:Name="MenuAutoCompletion" 
@@ -76,11 +75,9 @@
 
             </MenuItem>
             <MenuItem Header="ヘルプ(_H)">
-                <!-- BVE公式サイトへのリンクメニュー -->
                 <MenuItem Header="BVE公式サイト(_B)" Click="MenuBveSite_Click" />
                 <MenuItem Header="BVE 公開ガイドライン" Click="MenuBveSiteGuide_Click" />
                 <MenuItem Header="BVE ファイル書式" Click="MenuBveformat_Click" />
-
                 <Separator />
                 <MenuItem Header="バージョン情報(_A)..." Click="MenuAbout_Click" />
             </MenuItem>
@@ -89,6 +86,10 @@
         <StatusBar DockPanel.Dock="Bottom" x:Name="MainStatusBar" Background="#F5F5F5">
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Text="準備完了" />
+            </StatusBarItem>
+            <StatusBarItem>
+                <!-- ★ 追加: 文字コード表示用 -->
+                <TextBlock x:Name="FileEncodingText" Text="UTF-8" Margin="0,0,15,0" VerticalAlignment="Center"/>
             </StatusBarItem>
             <StatusBarItem>
                 <TextBlock x:Name="EditModeText" Text="挿入" Margin="8,0" />
@@ -130,10 +131,7 @@
                     </TreeView.ContextMenu>
                 </TreeView>
             </DockPanel>
-
-            <!-- 境界スプリッター -->
             <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" Background="#FFDDDDDD" />
-
             <!-- 2. 右側: メインエリア（上下分割：エディタ ＆ エラー一覧） -->
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
@@ -166,25 +164,13 @@
                     </TabItem>
                 </TabControl>
                 <!-- MapTextEditor と ErrorListDataGrid の間に配置する水平スプリッター -->
-                <GridSplitter Grid.Row="0"
-                              Height="5"
-                              HorizontalAlignment="Stretch"
-                              VerticalAlignment="Bottom"
-                              Background="#FFDDDDDD"
-                              ShowsPreview="True"
-                              ResizeDirection="Rows" />
+                <GridSplitter Grid.Row="0" Height="5" HorizontalAlignment="Stretch" VerticalAlignment="Bottom" Background="#FFDDDDDD" ShowsPreview="True"  ResizeDirection="Rows" />
                 <!-- 下部: エラー一覧 DataGrid -->
-                <DataGrid x:Name="ErrorListDataGrid" 
-                      Grid.Row="1" 
-                      AutoGenerateColumns="False" 
-                      IsReadOnly="True"
-MouseDoubleClick="ErrorListDataGrid_MouseDoubleClick"
-                      ContextMenuOpening="ErrorListDataGrid_ContextMenuOpening">                    <!-- ★ ここから追加 -->
+                <DataGrid x:Name="ErrorListDataGrid"  Grid.Row="1" AutoGenerateColumns="False"  IsReadOnly="True"   MouseDoubleClick="ErrorListDataGrid_MouseDoubleClick" ContextMenuOpening="ErrorListDataGrid_ContextMenuOpening">
                     <DataGrid.ContextMenu>
                         <ContextMenu>
                             <MenuItem Header="行のコピー" Click="ErrorMenuCopy_Click" InputGestureText="Ctrl+C" />
                             <Separator />
-                            <!-- ★ x:Name を付与 -->
                             <MenuItem x:Name="MenuErrorSelectInTree" Header="ファイルツリーでこのファイルを選択" Click="ErrorMenuSelectInTree_Click" />
                             <MenuItem x:Name="MenuErrorOpenInExplorer" Header="エクスプローラーでファイルを表示" Click="ErrorMenuOpenInExplorer_Click" />
                             <Separator />
@@ -192,7 +178,6 @@ MouseDoubleClick="ErrorListDataGrid_MouseDoubleClick"
                             <MenuItem Header="Geminiに修正を依頼する" Click="ErrorMenuAskGemini_Click" />
                         </ContextMenu>
                     </DataGrid.ContextMenu>
-                    <!-- ★ ここまで追加 -->
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="レベル" Binding="{Binding Level}" Width="40" />
                         <DataGridTextColumn Header="行" Binding="{Binding Line}" Width="60" />
