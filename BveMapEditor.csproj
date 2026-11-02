@@ -87,4 +87,8 @@
     <Folder Include="新しいフォルダー\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include=".github\copilot-instructions.md" />
+  </ItemGroup>
+
 </Project>

@@ -11,7 +11,7 @@ BveTs Map 2.02:shift-jis
 # パーサー側エラー検知済み は 自作テキストエディタのパーサー側がエラーとして検知するようにしたことをさします
 # Bve5/BVE6 のエラー検知部分と同じかそれより厳格にする
 #
-# エラー検知するようにした部分は誤認回避のためコメントアウトしている場合があります。その場合はスルーしてください。
+# エラー検知するようにした部分は誤認回避のためコメントアウト(# / //)している場合があります。その場合はスルーしてください。
 #
 ###########################################
 
@@ -95,7 +95,7 @@ $ = 123; #変数が不明です。 Bve5/BVE6: エラーなし パーサー側エラーなし
 #
 ################################################
 900;
-Track['Track1'].Cant.SetGauge(1.435); # <--これを忘れるとこれ以降の他軌道キー (Track['Track1'] の'Track1' がキーまたはディレクトリに存在しませんでした
+#Track['Track1'].Cant.SetGauge(1.435); # <--これを忘れるとこれ以降の他軌道キーが存在しない扱い 　BVE5/BVE6:'Track1' がキーまたはディレクトリに存在しませんでした パーサー側エラー検知
 
 950;
 ###Curve.BeginTransition();
@@ -107,13 +107,13 @@ Track['Track1'].Cant.SetGauge(1.435); # <--これを忘れるとこれ以降の他軌道キー (T
 #Curve.End(); # カントがある場合はEndの前に Curve.BeginTransition(); がないと直線でもカントがついた状態になる  パーサー側エラー検知 'BeginTransition' is required before 'Begin'. 
 
 1200;
-###Track['Track1'].Cant.BeginTransition();
+#Track['Track1'].Cant.BeginTransition(); # Track['Track1'].Cant.SetGauge(1.435); が存在するかを解析する # や // でコメントアウトされている場合はエラーが検知される
 1250;
-Track['Track1'].Cant.Begin(0.1);  # CantがあるのにCant.BeginTransition();がない。 BVE5/BVE6: 'BeginTransition' is required before 'Begin'. パーサー側エラーなし
+#Track['Track1'].Cant.Begin(0.1);  # CantがあるのにCant.BeginTransition();がない。 BVE5/BVE6: 'BeginTransition' is required before 'Begin'. パーサー側エラー検知
 1300;
 ###Track['Track1'].Cant.BeginTransition();
 1350;
-Track['Track1'].Cant.End(); # カントがある場合はEndの前に Cant.BeginTransition(); がないとカントがついた状態になる  パーサー側エラーなし BVE5/BVE6: エラーなし
+#Track['Track1'].Cant.End(); # カントがある場合はEndの前に Cant.BeginTransition(); がないとカントがついた状態になる  パーサー側エラー検知 BVE5/BVE6: エラーなし
 
 
 
@@ -241,16 +241,16 @@ CabIlluminance.Interpolate(1);
 # 原因はオーバーシュートのせいです 将来修正予定らしいですが、動きがない…
 
 17;
-CabIlluminance.Interpolate(0);
+#CabIlluminance.Interpolate(0);
 17.5;
-CabIlluminance.Interpolate(1);
+#CabIlluminance.Interpolate(1);
 
 
 # 対策
 20;
-CabIlluminance.Interpolate(0);
+#CabIlluminance.Interpolate(0);
 21.5;
-CabIlluminance.Interpolate(0.8); # このあたりまでならオーバーシュートしない オーバーシュートしない範囲の計算がわかりません。
+#CabIlluminance.Interpolate(0.8); # このあたりまでならオーバーシュートしない オーバーシュートしない範囲の計算がわかりません。
 
 
 ###################################################
