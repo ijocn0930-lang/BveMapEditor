@@ -103,25 +103,78 @@ dotnet publish "H:\backup\d\users\kai\Document\project\BveMapEditor\BveMapEditor
 
 ## 🛠 プロジェクト構成
 
-```
-BveMapEditor/
-├── BveMapEditor/             # WPFメインアプリケーション
-│   ├── MainWindow.xaml       # 主画面レイアウト（3分割・タブ・エラー一覧）
-│   ├── MainWindow.xaml.cs       # メインクラス
-│   ├── ErrorFix.cs           # エラー一覧の「修正の候補」
-│   ├── MapParser.cs          # 構文解析インターフェース
-│   ├── MapHighlighter.cs     # AvalonEditハイライト制御 (BveMap.xshd)
-│   ├── BveSyntaxProvider.cs  # 自動補完（中身はワーカーの BveSyntaxProvider.cs から読む）
-│   └── AppSettings.cs        # 設定保持 (settings.json)
-└── BveMapParserWorker/       # 構文チェック用別プロセス（コンソールアプリ）
-    ├── Program.cs            # Named Pipe 通信サーバー（ParseRequest を受け取り ParseResponse（エラー・親子対応表・読み込んだリストのキーの一覧）を返す。パイプ名はエディタごとに別、--worker --pipe 名前 --parent エディタのプロセス番号 で起動。エディタが強制終了・クラッシュで終わってもワーカーは自分で終わる）
-    ├── BveLexer.cs           # 字句解析・トークナイザ
-    ├── BveParser.cs           # パーサー
-    ├── BveSemanticAnalyzer.cs # 構文処理
-    ├── BveSyntaxProvider.cs  # コマンドの辞書（構文チェックと自動補完の両方で使う。コマンドを足すときはここだけ直す）
-    └── MapParser.cs           # パーサー
+2つのプロジェクトでできています。エディタ（画面）と、構文チェックをする別のプログラム（ワーカー）です。エディタはワーカーを起動して、名前付きパイプでやり取りします（入力が止まって 0.7 秒たつと、マップの本文と、タブで開いている保存前の内容を送り、エラーなどを受け取る）。
 
 ```
+project/
+├── BveMapEditor/                  # エディタ（WPF アプリ）
+│   ├── BveMapEditor.slnx          # ソリューション（2つのプロジェクトをまとめる）
+│   ├── BveMapEditor.csproj        # エディタのプロジェクト（ワーカーを参照。Release は .pdb を作らない）
+│   │
+│   │   ── 画面・全体 ──
+│   ├── App.xaml / .cs             # 起動（渡されたファイル・.bveep の処理）・クラッシュログ・関連付けの登録
+│   ├── MainWindow.xaml / .cs      # 主画面（メニュー・エクスプローラーペイン・タブ・エラー一覧）、ワーカーの起動と通信、構文チェックの実行、タブの開閉
+│   ├── OnClosing.cs               # アプリを閉じるとき（未保存の確認・設定の保存）
+│   ├── AppSettings.cs             # 設定（アプリのフォルダの settings.json に保存）
+│   │
+│   │   ── エディタ（AvalonEdit）──
+│   ├── AvalonEditClass.cs         # 入力時の処理・自動補完・キーの候補・変数の吹き出し・「変更あり」の判定
+│   ├── BveCompletionData.cs       # 自動補完の候補 1 件の形
+│   ├── BveSyntaxProvider.cs       # 自動補完の辞書（中身はワーカーの BveSyntaxProvider.cs から読むだけ）
+│   ├── MapHighlighter.cs          # 色分け（BveMap.xshd を読む）
+│   ├── BveMap.xshd                # 色分けの定義
+│   ├── ErrorUnderlineRenderer.cs  # エラー（赤）・警告（オレンジ）の波線
+│   ├── CurrentLineHighlightRenderer.cs # 現在行の強調（薄い青）
+│   ├── ErrorFix.cs                # 「修正の候補」（右クリックでその場で直す）
+│   │
+│   │   ── メニュー・ファイル ──
+│   ├── TextFileManager.cs         # ファイルを開く・保存（文字コード・開けないファイルの判定）
+│   ├── ProjectFile.cs             # プロジェクト（.bveproj）と前回のタブの自動復元・エディタの共通の初期化
+│   ├── FileExplorerPaine.cs       # エクスプローラーペイン（ツリー・名前の変更・貼り付け・止めるファイルとフォルダ）
+│   ├── FileSystemNode.cs          # エクスプローラーペインのツリーの 1 項目
+│   ├── MenuExplorer.cs            # エクスプローラーペインのメニュー（再読み込みなど）
+│   ├── Bveep.cs                   # エクスプローラーペインの設定ファイル（.bveep）の保存・読み込み
+│   ├── EditMenu.cs                # 「編集」メニュー・検索ウィンドウを開く
+│   ├── SettingsMenu.cs            # 「設定」メニュー（フォント・テーマ・拡大縮小など）
+│   ├── debugmenu.cs               # 「デバッグ」メニュー（BVE・QuickMapViewer の起動）
+│   ├── SiteLink.cs                # 「ヘルプ」メニューのサイトへのリンク
+│   │
+│   │   ── ほかの窓 ──
+│   ├── SearchWindow.xaml / .cs    # 検索と置換
+│   ├── SaveEncodingDialog.xaml / .cs # 保存するときの文字コードの選択
+│   ├── DetailSettingsWindow.xaml / .cs # 詳細設定（関連付け・BVE のパスなど）
+│   ├── FontSettingsDialog.xaml / .cs # フォント設定
+│   ├── AboutWindow.xaml / .cs     # バージョン情報
+│   ├── FileLoadingWindow.xaml / .cs # ファイルを読んでいる間の表示
+│   ├── LoadingWindow.xaml / .cs   # フォルダを読んでいる間の表示
+│   │
+│   ├── Help/                      # エラーの種類ごとの解説ページ（HTML。エラー一覧から開く）
+│   ├── Properties/                # アイコン・発行の設定（PublishProfiles/FolderProfile.pubxml）など
+│   ├── Maps/                      # 試験用のサンプルシナリオ
+│   ├── _backup/                   # 直す前のファイルの控え（日付ごと。拡張子 .bak でビルドされない）
+│   ├── BveMapParserWorker/        # ワーカーのフォルダへのリンク（ビルドの対象からは外している）
+│   │
+│   ├── README.md / RELEASE.md     # 説明・リリース内容
+│   ├── Plan.md / Plan_Archive.md  # 作業の計画と記録（古いものは Plan_Archive.md）
+│   ├── CLAUDE.md                  # 作業のルールとファイルの説明
+│   ├── system_extensions_list.md  # 止める拡張子の一覧（システムにかかわるファイル）
+│   └── LICENSE.txt / THIRD-PARTY-NOTICES.txt # ライセンス
+│
+└── BveMapParserWorker/            # ワーカー（構文チェックをする別のプログラム。画面なし）
+    ├── BveMapParserWorker.csproj  # ワーカーのプロジェクト（出力先はエディタの bin。Release は .pdb を作らない）
+    ├── Program.cs                 # 名前付きパイプでエディタとやり取りする（--worker --pipe 名前 --parent エディタの番号 で起動。
+    │                              #   エディタが終わったら自分も終わる。受け取るデータの大きさの上限・同じユーザーだけ接続できる）
+    ├── MapParser.cs               # 構文チェックの入口（字句解析 → 構文解析 → 意味のチェック。エラーの波線の範囲もここで決める）
+    ├── BveLexer.cs                # 字句解析（本文を単語・記号に分ける）
+    ├── BveParser.cs               # 構文解析（文に分ける。距離程・変数の代入・コマンド。; 抜けなど）
+    ├── BveSemanticAnalyzer.cs     # 意味のチェック（コマンド・引数・キー・リストファイル・include・変数・距離程・カントなど）。
+    │                              #   読み込んだキーの一覧・変数の宣言の一覧・include の親子関係もエディタに返す
+    ├── BveSemanticCommandRules.cs # コマンドごとの引数の数・数値の引数かどうか
+    ├── BveSyntaxProvider.cs       # コマンドの辞書（構文チェックと自動補完の両方の元。コマンドを足すときはここだけ直す）
+    └── BveCompletionData.cs       # 自動補完の候補の形（ワーカー側）
+```
+
+- `bin/`・`obj/` はビルドの出力（ワーカーの出力もエディタの `bin/` に入る）。そのほかの `.claude/`・`.github/`・`clinerules/`・`BenchmarkSuite1/`・`BenchmarkDotNet.Artifacts/`・`新しいフォルダー/`、`map.txt`・`abc.txt` などの .txt は、開発・試験用
 
 ---
 
