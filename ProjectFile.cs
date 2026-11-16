@@ -72,17 +72,25 @@ namespace BveMapEditor
                 {
                     if (item is TabItem ti && GetTabInfo(ti) is TabDocumentInfo info)
                     {
-                        data.Tabs.Add(new TabSessionItem
+                        var session = new TabSessionItem
                         {
                             FilePath = info.FilePath, // 完全パス（無題の場合はnull）
                             IsActive = (EditorTabControl.SelectedItem == ti)
-                        });
+                        };
+                        // ★ (2026-11-16) 「終了時のカーソル位置を記録する」がオンなら、カーソルの行・列も残す
+                        if (currentSettings.RememberCaretPosition && info.Editor?.TextArea?.Caret != null)
+                        {
+                            session.CaretLine = info.Editor.TextArea.Caret.Line;
+                            session.CaretColumn = info.Editor.TextArea.Caret.Column;
+                        }
+                        data.Tabs.Add(session);
                     }
                 }
             }
             return data;
         }
-        public async void TryRestoreAutoSession()
+        // ★ (2026-11-15) async void → async Task にした（起動時に渡されたファイルを、復元が終わってから開くため。App.xaml.cs で await する）
+        public async Task TryRestoreAutoSessionAsync()
         {
             try
             {
@@ -122,6 +130,13 @@ namespace BveMapEditor
                     var projectData = JsonSerializer.Deserialize<BveProjectData>(json);
                     if (projectData != null)
                     {
+                        // ★ (2026-11-15) プロジェクトを開くと今のタブは全部閉じるので、未保存のタブがあれば先に「保存しますか?」を聞く
+                        //    （以前は確認なしで閉じていたため、書いた内容が消えていた）。キャンセルなら開かない
+                        if (projectData.Tabs.Count > 0 && !PromptSaveModifiedTabs())
+                        {
+                            App.LogOperation("プロジェクトを開くのをキャンセル");
+                            return;
+                        }
                         await LoadProjectDataAsync(projectData);
                         _currentProjectPath = openDlg.FileName; // ★ 開いたプロジェクトパスを記憶
                         App.LogOperation($"プロジェクトを読み込みました: {openDlg.FileName}");
@@ -196,9 +211,7 @@ namespace BveMapEditor
         private string ReadTextWithEncodingFallback(string path)
         {
             byte[] bytes = File.ReadAllBytes(path);
-            int sampleSize = Math.Min(bytes.Length, 4096);
-            byte[] sample = bytes.Take(sampleSize).ToArray();
-            Encoding enc = DetectEncodingFromSample(sample);
+            Encoding enc = DetectEncodingFromSample(bytes); // ★ ファイル全体で判定
             string text;
             try
             {
@@ -221,7 +234,12 @@ namespace BveMapEditor
         public async Task LoadProjectDataAsync(BveProjectData projectData)
         {
             // 1. エクスプローラーペインのルートフォルダ復元
-            if (!string.IsNullOrEmpty(projectData.RootFolderPath) && Directory.Exists(projectData.RootFolderPath))
+            // ★ (2026-11-15) Windows・Program Files などのシステムのフォルダ（とその中）は開かない（知らせてエクスプローラーペインは空のまま）
+            if (!string.IsNullOrEmpty(projectData.RootFolderPath) && IsForbiddenSystemPath(projectData.RootFolderPath))
+            {
+                MessageBox.Show(this, $"Windows や Program Files などのシステムのフォルダは開けません。エクスプローラーペインは読み込みません。\n\nフォルダ: {projectData.RootFolderPath}", "プロジェクトを開く", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            else if (!string.IsNullOrEmpty(projectData.RootFolderPath) && Directory.Exists(projectData.RootFolderPath))
             {
                 _currentRootFolderPath = projectData.RootFolderPath;
                 SetupFileSystemWatcher(_currentRootFolderPath);
@@ -236,6 +254,7 @@ namespace BveMapEditor
             // 2. タブの復元（ファイルパスからテキストを読み込み）
             if (EditorTabControl != null && projectData.Tabs.Count > 0)
             {
+                ForgetAllTabs(); // ★ (2026-11-15) 閉じるタブのエディタをメモリから消せるようにする
                 EditorTabControl.Items.Clear();
                 TabItem? activeTabToSelect = null;
 
@@ -247,6 +266,11 @@ namespace BveMapEditor
                     string header = "無題";
                     string? filePath = tabInfo.FilePath;
                     Encoding? fileEncoding = null; // ★ 読み込んだエンコーディングを保持する変数
+                    // ★ (2026-11-15) システムのフォルダの中のファイル・システムにかかわるファイル（vhd・pif など）は読み込まない（空の「無題」タブにする）
+                    if (!string.IsNullOrEmpty(filePath) && (IsForbiddenSystemPath(filePath) || IsProtectedFile(Path.GetFileName(filePath))))
+                    {
+                        filePath = null;
+                    }
                     // ファイルが存在する場合はディスクから読み込む
                     if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
                     {
@@ -254,9 +278,7 @@ namespace BveMapEditor
                         {
                             // ★ バイト配列として読み込み、エンコーディングを判定して文字列化する
                             byte[] bytes = await File.ReadAllBytesAsync(filePath);
-                            int sampleSize = Math.Min(bytes.Length, 4096);
-                            byte[] sample = bytes.Take(sampleSize).ToArray();
-                            fileEncoding = DetectEncodingFromSample(sample);
+                            fileEncoding = DetectEncodingFromSample(bytes); // ★ ファイル全体で判定
                             string? text;
                             try
                             {
@@ -267,6 +289,7 @@ namespace BveMapEditor
                                 fileEncoding = Encoding.GetEncoding(932);
                                 text = fileEncoding.GetString(bytes);
                             }
+                            text = RemoveLeadingBom(text); // ★ 先頭の BOM 文字を取り除く
 
                             editor.Text = text;
                             header = Path.GetFileName(filePath);
@@ -296,6 +319,11 @@ namespace BveMapEditor
                     };
                     tab.Tag = docInfo;
                     EditorTabControl.Items.Add(tab);
+                    // ★ (2026-11-16) 記録したカーソルの位置に戻す（「終了時のカーソル位置を記録する」がオンで、記録があるとき）
+                    if (currentSettings.RememberCaretPosition && tabInfo.CaretLine > 0 && !string.IsNullOrEmpty(filePath))
+                    {
+                        RestoreCaretPosition(editor, tabInfo.CaretLine, tabInfo.CaretColumn);
+                    }
 
                     if (tabInfo.IsActive)
                     {
@@ -316,13 +344,55 @@ namespace BveMapEditor
                 UpdateEncodingStatus();
             }
         }
+        /// <summary>
+        /// ★ (2026-11-16) カーソルを記録した行・列に置き、画面に出たときにその行が見えるようにスクロールする
+        /// ファイルが短くなっていたら、ある所まで（最後の行・行末）に合わせる
+        /// </summary>
+        private static void RestoreCaretPosition(ICSharpCode.AvalonEdit.TextEditor editor, int line, int column)
+        {
+            try
+            {
+                var doc = editor.Document;
+                if (doc == null || doc.LineCount == 0) return;
+                int l = Math.Clamp(line, 1, doc.LineCount);
+                var docLine = doc.GetLineByNumber(l);
+                int c = Math.Clamp(column, 1, docLine.Length + 1);
+                editor.TextArea.Caret.Position = new ICSharpCode.AvalonEdit.TextViewPosition(l, c);
+
+                // まだ画面に出ていない（タブを選んでいない）エディタはスクロールできないので、画面に出たときに1回だけスクロールする
+                void ScrollOnce(object? s, RoutedEventArgs e)
+                {
+                    editor.Loaded -= ScrollOnce;
+                    editor.Dispatcher.BeginInvoke(() =>
+                    {
+                        try { editor.ScrollTo(l, c); } catch { }
+                    }, System.Windows.Threading.DispatcherPriority.Loaded);
+                }
+                if (editor.IsLoaded)
+                {
+                    editor.Dispatcher.BeginInvoke(() =>
+                    {
+                        try { editor.ScrollTo(l, c); } catch { }
+                    }, System.Windows.Threading.DispatcherPriority.Loaded);
+                }
+                else
+                {
+                    editor.Loaded += ScrollOnce;
+                }
+            }
+            catch
+            {
+                // 戻せなくてもファイルは開けているので何もしない
+            }
+        }
+
         // テキストエディタに対する共通の初期化処理
         private void InitializeEditor(ICSharpCode.AvalonEdit.TextEditor editor)
         {
             if (editor == null) return;
             editor.MinHeight = 120;
-            editor.FontFamily = MapTextEditor?.FontFamily ?? new FontFamily("Consolas");
-            editor.FontSize = MapTextEditor?.FontSize ?? 14.0;
+            // ★ (2026-11-15) フォント・右端で折り返す・テーマは設定から当てる（以前は最初のエディタのフォントを写すだけで、折り返し・テーマは写していなかった）
+            ApplyViewSettingsToEditor(editor);
             editor.ShowLineNumbers = true;
 
             var options = editor.Options;
@@ -339,9 +409,14 @@ namespace BveMapEditor
             editor.TextChanged += MapTextEditor_TextChanged;
             editor.TextArea.TextEntered += MapTextEditor_TextEntered;
             editor.TextArea.TextEntering += MapTextEditor_TextEntering;
+            // ★ キーが空の [''] にカーソルが来たらキーの候補を出す
+            editor.TextArea.Caret.PositionChanged += (s, ea) => OnCaretMovedForKeyCompletion(editor);
 
             // ★ 追加：Ctrl + マウスホイールによるフォントサイズ変更イベントを登録
             editor.PreviewMouseWheel += MapTextEditor_PreviewMouseWheel;
+            // ★ (2026-11-16) 変数にマウスを乗せたら宣言を吹き出しで出す（AvalonEditClass.cs）
+            editor.MouseHover += Editor_MouseHover;
+            editor.MouseHoverStopped += Editor_MouseHoverStopped;
 
             var cm = new ContextMenu();
             cm.Items.Add(new MenuItem() { Header = "元に戻す(_U)", Command = ApplicationCommands.Undo });

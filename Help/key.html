@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（キー）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: キー ['…']</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <p>Structure・Sound・Sound3D・Station・Signal・Track・Repeater・Train などのコマンドは、<b>Structure['キー']</b> のように角括弧と引用符でキー（名前）を指定します。キーはリストファイル（Structure.Load などで読み込む CSV）に書かれている名前と同じでなければなりません。</p>
+        <ul>
+            <li><b>キー 'X' は対応するリストファイルに存在しません</b> … リストファイルにその名前がありません（つづり・大文字小文字の違い・リストへの書き忘れ）。</li>
+            <li><b>リストがまだロードされていないため、キー 'X' を検証できません</b> … そのリストを読み込む .Load がない、またはこの行より後ろにあります。</li>
+            <li><b>角括弧 '[]' が不足 / '[]' の中にキーが指定されていません / キーはアポストロフィ等で囲む</b> … キーの書き方が間違っています。</li>
+            <li><b>指定には丸括弧 '()' ではなく、角括弧 '[]' を使用してください</b> … キーを ( ) で書いています。</li>
+            <li><b>Repeater のストラクチャキー</b> … Repeater の Begin（11 番目以降）/ Begin0（5 番目以降）の引数に書いたストラクチャーのキーがリストにありません。</li>
+            <li><b>ステーションキー 'X' が重複して記述されています</b> … 同じ駅を2回配置しています。</li>
+        </ul>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>間違い</h3>
+        <div class="code ng">Structure.Put('0', 0, 0, 0, 0, 0, 0, 0, 25);
+Structure[Bg_Fine].Put('0', 0, 0, 0, 0, 0, 0, 0, 25);
+Structure['Bg_Fnie'].Put('0', 0, 0, 0, 0, 0, 0, 0, 25);</div>
+        <h3>正しい</h3>
+        <div class="code ok">Structure['Bg_Fine'].Put('0', 0, 0, 0, 0, 0, 0, 0, 25);</div>
+        <p>キーの候補は、<b>Structure['</b> と入力すると自動補完で一覧に出ます（構文チェックが一度終わった後）。</p>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">「リストファイルに存在しません」は、右クリック ➔「修正の候補」で、つづりの近いキーを最大3つ出します（例: Bg_Fnie → Bg_Fine）。「アポストロフィが片方しかありません」「アポストロフィ等で囲むか…」は「キーを ' ' で囲む」で直せます（例: [FormR0] → ['FormR0']）。</div>
+    </div>
+</body>
+</html>

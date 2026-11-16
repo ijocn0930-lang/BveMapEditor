@@ -13,13 +13,23 @@
     <ApplicationIcon>Properties\app.ico</ApplicationIcon>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+  <!-- ★ (2026-11-16) デバッグシンボル（.pdb）: Debug は作る（デバッグ・クラッシュログの行番号のため）。
+       Release は x64 / AnyCPU に関係なく作らない（発行は x64 なので、以前の「Release|AnyCPU」の条件では効かなかった） -->
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
     <DebugType>portable</DebugType>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-    <DebugType>portable</DebugType>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="BveMapParserWorker\**" />
+    <EmbeddedResource Remove="BveMapParserWorker\**" />
+    <None Remove="BveMapParserWorker\**" />
+    <Page Remove="BveMapParserWorker\**" />
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Remove="CheckCommandArguments.cs" />
@@ -63,13 +73,8 @@
     <None Update="BveMap.xshd">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-    <None Update="Help\default.html">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
-    <None Update="Help\Put.html">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
-    <None Update="Help\Structure.html">
+    <!-- ★ Help フォルダの HTML をまとめて出力フォルダにコピーする（HTML を足しても、ここを書き足さなくてよい） -->
+    <None Update="Help\*.html">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="Properties\Settings.settings">
@@ -83,7 +88,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Help - コピー\" />
     <Folder Include="新しいフォルダー\" />
   </ItemGroup>
 

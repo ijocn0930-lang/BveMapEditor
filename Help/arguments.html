@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（引数）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+        table { border-collapse: collapse; }
+        td, th { border: 1px solid #ccc; padding: 4px 10px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 引数（( ) の中の値）</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <ul>
+            <li><b>X の引数は N 個である必要があります（現在: M個）</b> … ( ) の中の値の数が合っていません。よくあるのは Put（9個）と Put0（3個）の取り違えです。</li>
+            <li><b>X の第 N 引数には数値を指定してください</b> … 数値の位置に文字や名前が入っています。</li>
+            <li><b>X の第 N 引数は文字列のため ' ' で囲む必要があります</b> … 軌道名やストラクチャーキーなどの文字列を ' ' で囲んでいません（distance もここではただの文字として扱われます）。</li>
+            <li><b>0 または 1 / 0 以上 1 以下 / 傾斜オプション 0〜3</b> … 決まった範囲の値を指定してください。</li>
+            <li><b>.X() の引数には何も指定できません</b> … ( ) の中を空にします。</li>
+        </ul>
+        <table>
+            <tr><th>コマンド</th><th>引数</th></tr>
+            <tr><td>Structure['キー'].Put</td><td>軌道名, x, y, z, rx, ry, rz, 傾斜, スパン（9個）</td></tr>
+            <tr><td>Structure['キー'].Put0</td><td>軌道名, 傾斜, スパン（3個）</td></tr>
+        </table>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>間違い</h3>
+        <div class="code ng">Structure['abc'].Put('0', 1, 25);
+Structure['abc'].Put(xyz, 0, 0, 0, 0, 0, 0, 0, 0);
+Structure['abc'].Put0('0, 1, 25);</div>
+        <h3>正しい</h3>
+        <div class="code ok">Structure['abc'].Put0('0', 1, 25);
+Structure['abc'].Put('xyz', 0, 0, 0, 0, 0, 0, 0, 0);
+Structure['abc'].Put0('0', 1, 25);</div>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">右クリック ➔「修正の候補」で、次の直し方を選べます。
+            <ul>
+                <li>引数の数が合うコマンドに変える（Put ↔ Put0、Begin ↔ Begin0）</li>
+                <li>足りない引数を後ろに足す（数値は 0、文字列は ''）／多い引数を後ろから消す（Repeater は除く）</li>
+                <li>文字列の閉じる ' を足す、名前を ' ' で囲む</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

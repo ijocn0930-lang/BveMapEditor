@@ -1,0 +1,581 @@
+﻿using System;
+using System.IO;
+using System.Text;
+using System.Windows;
+using System.Windows.Input;
+using Microsoft.Win32;
+using System.Windows.Controls;
+using System.Windows.Media;
+using BveMapParserWorker;
+
+namespace BveMapEditor
+{
+public partial class MainWindow : Window
+        {
+        //初期化処理を書かないこと
+
+        private async void MenuOpen_Click(object sender, ExecutedRoutedEventArgs e)
+        {
+            App.LogOperation("ファイルを開くメニューがクリックされました。");
+            // ★ 以前はここで「未保存の変更の確認」と「エラー残存の確認」を出していたが、やめた
+            //    ・ファイルは新しいタブで開くので、今のタブの内容やエラーは消えない（OpenFileAsync を参照）
+            //    ・エラー残存の確認は、警告も数えるためほぼ毎回出ていた
+            var openFileDialog = new OpenFileDialog
+            {
+                Filter = "Map File (*.txt)|*.txt|All Files (*.*)|*.*",
+                Title = "マップファイルを開く"
+            };
+
+            if (openFileDialog.ShowDialog() == true)
+            {
+                // ★ ユーザーが選択した実際のファイルパスを代入する
+                string mapFilePath = openFileDialog.FileName;
+
+                // ファイル存在チェック（実際のパスを使用）
+                if (!File.Exists(mapFilePath))
+                {
+                    var errors = new List<ParseError>
+        {
+            new() { Line = 1,Column = 1,Message = $"マップファイルが見つかりません: {mapFilePath}" }
+            
+        };
+                    ErrorListDataGrid.ItemsSource = errors;
+                    return;
+                }
+                // 非同期のファイルオープンメソッドを呼び出し
+                await OpenFileAsync(mapFilePath);
+            }
+        }
+        /// <summary>
+        /// ファイルを非同期で読み込み、エディタへ展開する処理
+        /// </summary>
+        private async Task OpenFileAsync(string filePath)
+        {
+            App.LogOperation("ファイルを開こうとしています");
+
+            // 1. すでに同じファイルが他のタブで開かれていないかチェック
+            if (EditorTabControl != null)
+            {
+                foreach (var item in EditorTabControl.Items)
+                {
+                    if (item is TabItem ti && GetTabInfo(ti) is TabDocumentInfo info)
+                    {
+                        if (!string.IsNullOrEmpty(info.FilePath) && string.Equals(info.FilePath, filePath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            MessageBox.Show(
+                                $"指定されたファイルは既に開かれています。\n該当のタブへ移動します。\n\nファイル: {Path.GetFileName(filePath)}",
+                                "ファイルの重複オープン",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Information);
+                            EditorTabControl.SelectedItem = ti;
+                            return;
+                        }
+                    }
+                }
+            }
+            // 2. ファイルサイズの事前チェック
+            try
+            {
+                var fileInfo = new FileInfo(filePath);
+                long fileSizeInBytes = fileInfo.Length;
+                const long warningThreshold = 30 * 1024 * 1024; // 30MB
+                if (fileSizeInBytes > warningThreshold)
+                {
+                    double fileSizeInMb = (double)fileSizeInBytes / (1024 * 1024);
+                    var result = MessageBox.Show(
+                        $"選択されたファイルは非常に大きいです（約 {fileSizeInMb:F1} MB）。\n" +
+                        "読み込みに時間がかかり、お使いのPCのメモリを多く消費する可能性があります。\n\n" +
+                        "本当にこのファイルを開きますか？",
+                        "メモリ使用量の警告 - BveMapEditor",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+                    if (result == MessageBoxResult.No) return;
+                }
+            }
+            catch
+            {
+                // サイズ取得失敗時はそのまま続行
+            }
+
+            // 3. ユーザーへの通知（ビジー状態カーソル ＆ ローディングウィンドウの表示）
+            Mouse.OverrideCursor = Cursors.Wait;
+            isLoading = true;
+            UpdateTitle();
+
+            FileLoadingWindow? loadingWindow = null;
+            try
+            {
+                loadingWindow = new FileLoadingWindow(Path.GetFileName(filePath))
+                {
+                    Owner = this
+                };
+                loadingWindow.Show();
+
+                // ウィンドウが確実に描画されるよう少し待機
+                await Task.Delay(50);
+
+                // 4. バックグラウンドスレッドでファイル読み込みとエンコーディング判定を実行
+                string fileContent;
+                var loadResult = await Task.Run(() =>
+                {
+                    byte[] bytes;
+                    using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        bytes = new byte[fs.Length];
+                        int totalBytesRead = 0;
+                        int bytesRead;
+                        while (totalBytesRead < bytes.Length && (bytesRead = fs.Read(bytes, totalBytesRead, bytes.Length - totalBytesRead)) > 0)
+                        {
+                            totalBytesRead += bytesRead;
+                        }
+                    }
+
+                    // ★ ファイル全体からエンコーディングを判定（先頭 4KB だけだと誤判定するため）
+                    Encoding enc = DetectEncodingFromSample(bytes);
+
+                    string content;
+                    try
+                    {
+                        content = enc.GetString(bytes);
+                    }
+                    catch
+                    {
+                        // デコードに失敗した場合はShift-JIS（CP932）にフォールバック
+                        var sjis = Encoding.GetEncoding(932);
+                        content = sjis.GetString(bytes);
+                        enc = sjis;
+                    }
+                    content = RemoveLeadingBom(content); // ★ 先頭の BOM 文字を取り除く
+
+                    return (Content: content, Encoding: enc);
+                });
+
+                fileContent = loadResult.Content;
+                currentFileEncoding = loadResult.Encoding;
+
+                // 5. ヘッダーチェック
+                bool hasValidHeader = fileContent.Contains("BveTs Map", StringComparison.OrdinalIgnoreCase);
+                if (!hasValidHeader)
+                {
+                    loadingWindow.Hide(); // メッセージボックス表示中はローディングを隠す
+                    var result = MessageBox.Show(
+                        "このテキストファイルはMapファイルではありませんが、そのまま続けますか？",
+                        "ファイル形式の確認",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+                    if (result == MessageBoxResult.No)
+                    {
+                        loadingWindow.Close();
+                        return;
+                    }
+                    loadingWindow.Show();
+                }
+
+                // 6. エディタへのテキスト展開とタブ構築（UIスレッド）
+                try
+                {
+                    var activeTabInfo = (EditorTabControl != null && EditorTabControl.SelectedItem is TabItem sti) ? GetTabInfo(sti) : null;
+                    // ★ 今のタブを使うのは「無題で、何も書かれていない」ときだけ。それ以外は新しいタブで開く
+                    //    （以前は無題タブなら中身があっても上書きして読み込んでいたため、書いた内容が消えていた）
+                    bool activeIsEmptyUntitled = activeTabInfo != null &&
+                        string.IsNullOrEmpty(activeTabInfo.FilePath) &&
+                        !activeTabInfo.IsModified &&
+                        (activeTabInfo.Editor?.Document?.TextLength ?? 0) == 0;
+                    bool shouldCreateNewTab = activeTabInfo != null && !activeIsEmptyUntitled && EditorTabControl != null;
+
+                    if (shouldCreateNewTab)
+                    {
+                        var newEditor = new ICSharpCode.AvalonEdit.TextEditor()
+                        {
+                            FontFamily = ActiveEditor?.FontFamily ?? MapTextEditor?.FontFamily ?? new FontFamily("Consolas"),
+                            FontSize = ActiveEditor?.FontSize ?? MapTextEditor?.FontSize ?? 14.0,
+                            ShowLineNumbers = true,
+                            MinHeight = 120
+                        };
+                        newEditor.TextChanged += MapTextEditor_TextChanged;
+                        var cm = new ContextMenu();
+                        cm.Items.Add(new MenuItem() { Header = "元に戻す(_U)", Command = ApplicationCommands.Undo });
+                        cm.Items.Add(new MenuItem() { Header = "やり直す(_R)", Command = ApplicationCommands.Redo });
+                        cm.Items.Add(new Separator());
+                        cm.Items.Add(new MenuItem() { Header = "切り取り(_T)", Command = ApplicationCommands.Cut });
+                        cm.Items.Add(new MenuItem() { Header = "コピー(_C)", Command = ApplicationCommands.Copy });
+                        cm.Items.Add(new MenuItem() { Header = "貼り付け(_P)", Command = ApplicationCommands.Paste });
+                        cm.Items.Add(new Separator());
+                        cm.Items.Add(new MenuItem() { Header = "すべて選択(_A)", Command = ApplicationCommands.SelectAll });
+                        ContextMenuService.SetContextMenu(newEditor, cm);
+
+                        try
+                        {
+                            MapHighlighter.InitializeHighlighting(newEditor);
+                            newEditor.TextArea.TextEntered += MapTextEditor_TextEntered;
+                            newEditor.TextArea.TextEntering += MapTextEditor_TextEntering;
+                            if (newEditor.Document?.UndoStack != null)
+                            {
+                                newEditor.Document.UndoStack.PropertyChanged += UndoStack_PropertyChanged;
+                            }
+                            GetOrCreateRenderer(newEditor);
+                            GetOrCreateCurrentLineRenderer(newEditor);
+                        }
+                        catch
+                        {
+                            // 初期化失敗は無視
+                        }
+
+                        MapHighlighter.SetText(newEditor, fileContent);
+                        var tab = new TabItem()
+                        {
+                            Header = Path.GetFileName(filePath),
+                            Content = newEditor
+                        };
+                        var info = new TabDocumentInfo { Editor = newEditor, FilePath = filePath, IsModified = false, FileEncoding = currentFileEncoding, TabItem = tab };
+                        tab.Tag = info;
+                        EditorTabControl!.Items.Add(tab);
+                        EditorTabControl!.SelectedItem = tab;
+                    }
+                    else
+                    {
+                        var targetEditor = ActiveEditor ?? MapTextEditor;
+                        MapHighlighter.SetText(targetEditor, fileContent);
+                        if (targetEditor != null)
+                        {
+                            GetOrCreateRenderer(targetEditor);
+                        }
+                        var active = (EditorTabControl != null && EditorTabControl.SelectedItem is TabItem at) ? GetTabInfo(at) : null;
+                        if (active != null)
+                        {
+                            active.FilePath = filePath;
+                            active.FileEncoding = currentFileEncoding;
+                            active.IsModified = false;
+                            active.TabItem?.Header = Path.GetFileName(filePath);
+                        }
+                    }
+                }
+                catch (OutOfMemoryException)
+                {
+                    App.LogOperation("ファイルを開こうとしましたが、メモリが不足しています");
+                    MessageBox.Show(
+                        "テキストをエディタへ展開する際にメモリが不足しました。\n処理を中止します。",
+                        "メモリ不足エラー",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                    MapHighlighter.SetText(ActiveEditor ?? MapTextEditor, string.Empty);
+                    return;
+                }
+
+                currentFilePath = filePath;
+                isModified = false;
+                UpdateTitle();
+                (ActiveEditor ?? MapTextEditor)?.Document?.UndoStack?.ClearAll();
+                UpdateEditMenuState();
+            }
+            catch (Exception ex)
+            {
+                App.LogOperation("ファイルオープン失敗");
+                MessageBox.Show($"ファイルの読み込みに失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                // 7. 後始末（ローディングウィンドウを閉じ、カーソルを通常に戻す）
+                loadingWindow?.Close();
+                Mouse.OverrideCursor = null;
+                isLoading = false;
+                UpdateTitle();
+                UpdateEditMenuState();
+                UpdateEncodingStatus();
+                var targetEditor = ActiveEditor ?? MapTextEditor;
+                string openedFilePath = filePath;
+                await Dispatcher.InvokeAsync(() => RunSyntaxCheck(isImmediate: true),
+                System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+        }
+
+
+
+
+        // ★ 戻り値: 保存できたら true、キャンセルや失敗なら false
+        private bool SaveFileAs()
+        {
+            // 1. 保存前に現在のテキストで構文チェックを走らせ、最新のエラー一覧を取得する
+            App.LogOperation("名前を付けて保存");
+            if (ErrorListDataGrid.ItemsSource is System.Collections.ICollection errorCollection && errorCollection.Count > 0)
+            {
+                var result = MessageBox.Show(
+                    $"構文エラーが {errorCollection.Count} 件存在します。このまま保存しますか？",
+                    "警告", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (result == MessageBoxResult.No) return false;
+            }
+
+            var saveFileDialog = new SaveFileDialog
+            {
+                Filter = "Map File (*.txt)|*.txt|All Files (*.*)|*.*",
+                Title = "名前を付けて保存",
+                DefaultExt = ".txt"
+            };
+
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                return SaveFile(saveFileDialog.FileName);
+            }
+            return false; // 保存先の選択がキャンセルされた
+        }
+        /// <summary>
+        /// 指定した文字コードで保存できない文字を探す。
+        /// 見つかったら (true, 行番号, その文字) を返す。全部保存できるなら (false, 0, "") を返す。
+        /// UTF-8 / UTF-16 / UTF-32 はすべての文字を保存できるので調べない。
+        /// </summary>
+        private static (bool Found, int Line, string Character) FindUnencodableChar(string content, Encoding enc)
+        {
+            if (enc is UTF8Encoding || enc is UnicodeEncoding || enc is UTF32Encoding) return (false, 0, "");
+
+            // 保存できない文字があったら例外を出す設定のコピーを作って試す
+            var strict = (Encoding)enc.Clone();
+            strict.EncoderFallback = EncoderFallback.ExceptionFallback;
+            try
+            {
+                strict.GetByteCount(content);
+                return (false, 0, "");
+            }
+            catch (EncoderFallbackException ex)
+            {
+                string ch = ex.CharUnknownHigh != '\0'
+                    ? new string(new[] { ex.CharUnknownHigh, ex.CharUnknownLow }) // 絵文字など2つで1文字のもの
+                    : ex.CharUnknown.ToString();
+                int line = 0;
+                if (ex.Index >= 0 && ex.Index <= content.Length)
+                {
+                    line = 1;
+                    for (int i = 0; i < ex.Index; i++)
+                    {
+                        if (content[i] == '\n') line++;
+                    }
+                }
+                return (true, line, ch);
+            }
+        }
+
+        // ファイル書き込み処理
+        // ★ 戻り値: 保存できたら true、キャンセルや失敗なら false
+        private bool SaveFile(string filePath, Encoding? forcedEncoding = null, bool useDialogIfNull = true)
+        {
+            App.LogOperation($"ファイルを保存しようとしています: {filePath}");
+            try
+            {
+                // AvalonEdit からテキストを取得
+                var editorForWrite = ActiveEditor ?? MapTextEditor;
+                string content = MapHighlighter.GetText(editorForWrite);
+
+                // 優先順位:
+                // 1. forcedEncoding が指定されていればそれを使う
+                // 2. useDialogIfNull == true の場合はダイアログで選ばせる（Keep を選べば currentFileEncoding を使う）
+                // 3. useDialogIfNull == false の場合は currentFileEncoding を使い、無ければ UTF-8 にフォールバック
+                Encoding? encodingToUse = forcedEncoding;
+
+                if (encodingToUse == null)
+                {
+                    if (useDialogIfNull)
+                    {
+                        var (Confirmed, SelectedEncoding) = SaveEncodingDialog.PromptEncoding(this, currentFileEncoding);
+                        // ダイアログで Cancel された場合は保存を中止する
+                        if (!Confirmed) return false;
+                        // SelectedEncoding が null なら "Keep" が選ばれた扱い -> currentFileEncoding を使う（それも null なら UTF-8）
+                        encodingToUse = SelectedEncoding ?? currentFileEncoding ?? new UTF8Encoding(false);
+                    }
+                    else
+                    {
+                        encodingToUse = currentFileEncoding ?? new UTF8Encoding(false);
+                    }
+                }
+
+                // ★ 選んだ文字コードで保存できない文字があれば、黙って「?」にせずユーザーに確認する
+                var (found, badLine, badChar) = FindUnencodableChar(content, encodingToUse);
+                if (found)
+                {
+                    string encName = encodingToUse.CodePage == 932 ? "Shift-JIS" : encodingToUse.EncodingName;
+                    string where = badLine > 0 ? $"{badLine} 行目の「{badChar}」" : $"「{badChar}」";
+                    var answer = MessageBox.Show(
+                        $"{encName} では保存できない文字があります。\n" +
+                        $"例: {where}\n\n" +
+                        $"このまま {encName} で保存すると、その文字は「?」に置き換わります。\n\n" +
+                        "［はい］UTF-8（BOMなし）に変えて保存する\n" +
+                        $"［いいえ］このまま {encName} で保存する（「?」に置き換わる）\n" +
+                        "［キャンセル］保存しない",
+                        "保存できない文字があります - BveMapEditor",
+                        MessageBoxButton.YesNoCancel,
+                        MessageBoxImage.Warning);
+                    if (answer == MessageBoxResult.Cancel) return false;
+                    if (answer == MessageBoxResult.Yes)
+                    {
+                        encodingToUse = new UTF8Encoding(false);
+                    }
+                }
+
+                bool wasOverwrite = File.Exists(filePath);
+                File.WriteAllText(filePath, content, encodingToUse);
+
+                // 保存に成功したら現在のファイルパス・エンコーディング情報を更新
+                currentFilePath = filePath;
+                currentFileEncoding = encodingToUse;
+                // ★ 保存したタブの情報（パス・文字コード・タブ名）も更新する
+                //    （更新しないと、タブを切り替えたときに古い文字コードに戻ってしまう）
+                var savedTabInfo = GetTabInfo(EditorTabControl?.SelectedItem as TabItem);
+                if (savedTabInfo != null)
+                {
+                    savedTabInfo.FilePath = filePath;
+                    savedTabInfo.FileEncoding = encodingToUse;
+                    savedTabInfo.IsModified = false;
+                    savedTabInfo.TabItem?.Header = Path.GetFileName(filePath);
+                }
+                UpdateEncodingStatus();
+                UpdateTitle();
+                // 上書き保存だった場合は、特定ファイルのエンコーディング設定として記憶して次回以降の確認を省略できるようにする
+                try
+                {
+                    if (wasOverwrite && currentSettings != null)
+                    {
+                        try
+                        {
+                            // ★ BOM の有無も区別して記憶する（"utf-8" だけだと次回 BOM 付きで復元されてしまうため）
+                            currentSettings.PerFileEncodingMap[filePath] = EncodingToSettingKey(encodingToUse);
+                            currentSettings.Save();
+                        }
+                        catch
+                        {
+                            // 記憶に失敗しても保存自体は成功しているので無視
+                        }
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+                isModified = false;
+                UpdateTitle();
+                isModified = false;
+                UpdateEditMenuState();
+                MessageBox.Show($"ファイルを保存しました:\n{filePath}", "保存完了", MessageBoxButton.OK, MessageBoxImage.Information);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                App.LogOperation("ファイルセーブ失敗");
+                MessageBox.Show($"ファイルの保存に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+        }
+        /// <summary>
+        /// 文字コードを設定ファイルに記憶するための名前に変換する。
+        /// UTF-8 は BOM の有無で "utf-8-bom" / "utf-8" を使い分ける。
+        /// </summary>
+        private static string EncodingToSettingKey(Encoding enc)
+        {
+            if (enc is UTF8Encoding && enc.GetPreamble().Length > 0) return "utf-8-bom";
+            return enc.WebName;
+        }
+
+        /// <summary>
+        /// 設定ファイルに記憶した名前から文字コードを作り直す。
+        /// "utf-8" は BOM なし、"utf-8-bom" は BOM 付きとして扱う。
+        /// （Encoding.GetEncoding("utf-8") は BOM 付きになってしまうため、ここで区別する）
+        /// </summary>
+        private static Encoding SettingKeyToEncoding(string key)
+        {
+            return key.ToLowerInvariant() switch
+            {
+                "utf-8-bom" => new UTF8Encoding(true),
+                "utf-8" => new UTF8Encoding(false),
+                _ => Encoding.GetEncoding(key)
+            };
+        }
+
+        private void MenuSave_Click(object sender, ExecutedRoutedEventArgs e)
+        {
+            // 1. 保存前に現在のテキストで構文チェックを走らせ、最新のエラー一覧を取得する
+
+            if (ErrorListDataGrid.ItemsSource is System.Collections.ICollection errorCollection && errorCollection.Count > 0)
+            {
+                var result = MessageBox.Show(
+                    $"構文エラーが {errorCollection.Count} 件存在します。このまま保存しますか？",
+                    "警告", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+                if (result == MessageBoxResult.No) return;
+            }
+
+            if (string.IsNullOrEmpty(currentFilePath))
+            {
+                // 新規ファイルの場合は名前を付けて保存フローへ
+                MenuSaveAs_Click(sender, e);
+                return;
+            }
+
+            // 上書き保存: まず既にこのファイルに対して記憶されたエンコーディングがないか確認
+            if (!string.IsNullOrEmpty(currentFilePath) && currentSettings.PerFileEncodingMap.TryGetValue(currentFilePath, out var savedWebName))
+            {
+                try
+                {
+                    var enc = SettingKeyToEncoding(savedWebName);
+                    SaveFile(currentFilePath, enc, useDialogIfNull: false);
+                    return;
+                }
+                catch
+                {
+                    // 無効な指定なら続行して通常フローへ
+                }
+            }
+
+            // グローバル設定で確認がオフの場合は元のエンコーディングを保持して保存
+            if (!currentSettings.ConfirmEncodingOnSave)
+            {
+                SaveFile(currentFilePath, currentFileEncoding, useDialogIfNull: false);
+                return;
+            }
+
+            // それ以外は確認ダイアログを表示して選択
+            var (Confirmed, SelectedEncoding) = SaveEncodingDialog.PromptEncoding(this, currentFileEncoding);
+            if (!Confirmed) return;
+
+            Encoding? encodingToUse = SelectedEncoding ?? currentFileEncoding;
+            SaveFile(currentFilePath, encodingToUse, useDialogIfNull: false);
+        }
+        // 名前を付けて保存 (Ctrl+Shift+S 等)
+        private void MenuSaveAs_Click(object sender, ExecutedRoutedEventArgs e)
+        {
+            App.LogOperation("名前を付けて保存がクリックされました");
+            // まずエンコーディングを選択
+            var (Confirmed, SelectedEncoding) = SaveEncodingDialog.PromptEncoding(this, currentFileEncoding);
+            if (!Confirmed) return;
+
+            // 次に保存先を選ばせる
+            var saveFileDialog = new SaveFileDialog
+            {
+                Filter = "Map File (*.txt)|*.txt|All Files (*.*)|*.*",
+                Title = "名前を付けて保存",
+                DefaultExt = ".txt"
+            };
+
+            if (saveFileDialog.ShowDialog() == true)
+            {
+                Encoding? encodingToUse = SelectedEncoding ?? currentFileEncoding;
+                SaveFile(saveFileDialog.FileName, encodingToUse, useDialogIfNull: false);
+            }
+        }
+        // ファイルを実際にエディタで開くメソッド（既存のファイルオープン処理をここにまとめる） エクスプローラーペインからの操作です。メニューからの操作ではありません。
+
+        private async void OpenFileInEditor(string filePath)
+        {
+            try
+            {
+                // すでに実装されているファイル読み込み・エディタ表示処理をここに呼び出します
+                // 例: LoadFileToEditor(filePath);
+                await OpenFileAsync(filePath);
+            }
+            catch (OutOfMemoryException ex)
+            {
+            MessageBox.Show($"メモリが不足しているためファイルを開けませんでした:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"ファイルを開けませんでした:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+}

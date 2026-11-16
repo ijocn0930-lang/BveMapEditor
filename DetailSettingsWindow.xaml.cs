@@ -70,6 +70,9 @@ namespace BveMapEditor
         // ★ 開いた時点の初期状態を保持するフィールド
         private readonly bool _initialRetainSearchHistory;
         private readonly bool _initialEnableAutoRestore; // ★ 追加
+        // ★ (2026-11-15) 「括弧の自動補完」「保存時に文字コードを確認」も、× で閉じるときの変更チェックに入れるため初期値を覚える
+        private readonly bool _initialAutoCompleteBrackets;
+        private readonly bool _initialConfirmEncodingOnSave;
         internal DetailSettingsWindow(AppSettings settings)
         {
             InitializeComponent();
@@ -77,6 +80,8 @@ namespace BveMapEditor
             // ★ 初期値を保存
             _initialRetainSearchHistory = _settings.RetainSearchHistory;
             _initialEnableAutoRestore = _settings.EnableAutoRestore; // ★ 追加
+            _initialAutoCompleteBrackets = _settings.AutoCompleteBrackets;
+            _initialConfirmEncodingOnSave = _settings.ConfirmEncodingOnSave;
             // 現在の設定値をUIに反映
             ChkRetainSearchHistory.IsChecked = _settings.RetainSearchHistory;
             // ウィンドウを開いたときに現在の設定状態をチェックボックスに反映
@@ -188,6 +193,9 @@ namespace BveMapEditor
             // 変更チェック（履歴設定、Bveパス、QuickMapViewerパスのいずれかが変更されているか）
             bool isChanged = (ChkRetainSearchHistory.IsChecked != _initialRetainSearchHistory) ||
                              (ChkEnableAutoRestore.IsChecked != _initialEnableAutoRestore) || // ★ 追加
+                             // ★ (2026-11-15) 以前はこの2つを調べておらず、これだけ変えて × で閉じると確認なしで捨てていた
+                             (chkAutoCompleteBrackets.IsChecked != _initialAutoCompleteBrackets) ||
+                             (ChkConfirmEncodingOnSave.IsChecked != _initialConfirmEncodingOnSave) ||
                              (TxtBvePath.Text.Trim() != _initialBvePath) ||
                              (TxtQuickMapPath.Text.Trim() != _initialQuickMapPath);
 

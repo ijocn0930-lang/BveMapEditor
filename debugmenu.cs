@@ -125,7 +125,8 @@ namespace BveMapEditor
             if (success)
             {
                 // 起動が成功した場合、もし設定されているパスと異なる（＝新規選択された）なら保存するか尋ねる
-                if (currentSettings.BveExecutablePath != QMVPath)
+                // ★ (2026-11-15) 以前は BVE のパス（BveExecutablePath）と比べていたため、保存済みでも毎回「保存しますか？」と聞いていた
+                if (currentSettings.QuickMapViewerExecutablePath != QMVPath)
                 {
                     var result = MessageBox.Show(this,
                         $"QuickMapViewerの起動に成功しました。\nこの実行ファイルのパスを今後のために設定（保存）しますか？\n\nパス: {QMVPath}",

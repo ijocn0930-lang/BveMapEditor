@@ -1,0 +1,159 @@
+namespace BveMapParserWorker
+{
+    public static partial class BveSemanticAnalyzer
+    {
+        public class CommandRule
+        {
+            public int MinArgs { get; set; }
+            public int MaxArgs { get; set; } = int.MaxValue;
+            public bool AllowZeroArgs { get; set; }
+            public int[] NumericArgIndices { get; set; } = Array.Empty<int>();
+            public bool AllArgsNumeric { get; set; }
+            public Action<List<string>, int, string, List<ParseError>, Dictionary<string, object>>? CustomValidator { get; set; }
+        }
+
+        /// <summary>
+        /// ★ エディタの「修正の候補」用: コマンド（例: "Structure.Put"）の引数の数の範囲を返す。決まりがなければ false
+        ///    （引数の数が合わないコマンド名を候補に出さないために使う）
+        /// </summary>
+        public static bool GetArgumentCountRange(string commandName, out int min, out int max)
+        {
+            if (!string.IsNullOrEmpty(commandName) && CommandRules.TryGetValue(commandName, out var rule))
+            {
+                min = rule.AllowZeroArgs ? 0 : rule.MinArgs;
+                max = rule.MaxArgs;
+                return true;
+            }
+            min = 0;
+            max = int.MaxValue;
+            return false;
+        }
+
+        private static CommandRule Rule(int min, int max, bool zero = false, params int[] numeric) => new()
+        {
+            MinArgs = min, MaxArgs = max, AllowZeroArgs = zero, NumericArgIndices = numeric
+        };
+
+        private static CommandRule RuleWithValidator(int min, int max, Action<List<string>, int, string, List<ParseError>, Dictionary<string, object>> validator, params int[] numeric)
+            => new() { MinArgs = min, MaxArgs = max, NumericArgIndices = numeric, CustomValidator = validator };
+
+        private static readonly Dictionary<string, CommandRule> CommandRules = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Curve.Gauge"] = Rule(1, 1, numeric: [0]),
+            ["Legacy.Curve"] = Rule(1, 2, numeric: [0, 1]),
+            ["Legacy.Pitch"] = Rule(1, 1, numeric: [0]),
+            ["Legacy.Fog"] = Rule(1, 5, numeric: [0, 1, 2, 3, 4]),
+            ["Curve.SetCenter"] = Rule(1, 1, numeric: [0]),
+            ["Curve.SetGauge"] = Rule(1, 1, numeric: [0]),
+            ["Track.Cant.SetGauge"] = Rule(1, 1, numeric: [0]),
+            ["Track.Gauge"] = Rule(1, 1, numeric: [0]), // ★ 追加: Track[''].Cant.SetGauge と同じ（引数は軌間の数値1つ）
+            ["Track.Cant.SetCenter"] = Rule(1, 1, numeric: [0]),
+            ["Track.Cant.BeginTransition"] = Rule(0, 0, true),
+            ["Track.Cant.Begin"] = Rule(1, 1, numeric: [0]),
+            ["Track.Cant.End"] = Rule(0, 0, true),
+            ["Track.Cant.Interpolate"] = Rule(0, 1, true, 0),
+            ["Track.Cant"] = Rule(0, 1, true, 0),
+            ["Curve.Begin"] = Rule(1, 2, numeric: [0, 1]),
+            ["Curve.BeginCircular"] = Rule(1, 2, numeric: [0, 1]),
+            ["Curve.Interpolate"] = Rule(0, 2, true, 0, 1),
+            ["Curve.Change"] = Rule(1, 1, numeric: [0]),
+            ["Gradient.Begin"] = Rule(1, 1, numeric: [0]),
+            ["Gradient.BeginConst"] = Rule(1, 1, numeric: [0]),
+            ["Gradient.Interpolate"] = Rule(0, 1, true, 0),
+            ["Repeater.Begin"] = RuleWithValidator(11, int.MaxValue, ValidateRepeaterBegin),
+            ["Repeater.Begin0"] = RuleWithValidator(5, int.MaxValue, ValidateRepeaterBegin0),
+            ["Curve.SetFunction"] = RuleWithValidator(1, 1, ValidateFunction),
+            ["Track.Cant.SetFunction"] = RuleWithValidator(1, 1, ValidateFunction),
+            ["Structure.Put"] = RuleWithValidator(9, 9, ValidateStructureTilt, 1, 2, 3, 4, 5, 6, 7, 8),
+            ["Structure.Put0"] = RuleWithValidator(3, 3, ValidateStructureTilt0, 1, 2),
+            ["Structure.PutBetween"] = Rule(2, 3, numeric: [2]),
+            ["Background.Change"] = Rule(1, 1),
+            ["Station.Put"] = Rule(3, 3, numeric: [0, 1, 2]),
+            ["Track.Position"] = Rule(0, 4, true, 0, 1, 2, 3),
+            ["Track.X.Interpolate"] = Rule(0, 2, true, 0, 1),
+            ["Track.Y.Interpolate"] = Rule(0, 2, true, 0, 1),
+            ["Section.Begin"] = NumericRule(), ["Section.BeginNew"] = NumericRule(),
+            ["Section.SetSpeedLimit"] = NumericRule(), ["Signal.SpeedLimit"] = NumericRule(),
+            ["Signal.Put"] = RuleWithValidator(4, 10, ValidateSignalPut, 0, 2, 3, 4, 5, 6, 7, 8, 9),
+            ["Beacon.Put"] = Rule(3, 3, numeric: [0, 1, 2]),
+            ["SpeedLimit.Begin"] = Rule(1, 1, numeric: [0]), ["PreTrain.Pass"] = Rule(1, 1),
+            ["Light.Ambient"] = Rule(3, 3, numeric: [0, 1, 2]), ["Light.Diffuse"] = Rule(3, 3, numeric: [0, 1, 2]),
+            ["Light.Direction"] = Rule(2, 2, numeric: [0, 1]),
+            ["Fog.Interpolate"] = Rule(0, 4, true, 0, 1, 2, 3), ["Fog.Set"] = Rule(0, 4, true, 0, 1, 2, 3),
+            ["DrawDistance.Change"] = Rule(1, 1, numeric: [0]), ["CabIlluminance.Interpolate"] = Rule(1, 1, numeric: [0]),
+            ["CabIlluminance.Set"] = Rule(1, 1, numeric: [0]),
+            ["Irregularity.Change"] = Rule(6, 6, numeric: [0, 1, 2, 3, 4, 5]),
+            ["Sound3D.Put"] = Rule(2, 2, numeric: [0, 1]), ["RollingNoise.Change"] = Rule(1, 1, numeric: [0]),
+            ["FlangeNoise.Change"] = Rule(1, 1, numeric: [0]), ["JointNoise.Play"] = Rule(1, 1, numeric: [0]),
+            ["Train.Load"] = Rule(3, 3, numeric: [2]), ["Train.Enable"] = Rule(1, 1),
+            ["Train.Stop"] = Rule(4, 4, numeric: [0, 1, 2, 3]), ["Train.Add"] = Rule(4, 4, numeric: [3])
+        };
+
+        private static CommandRule NumericRule() => new() { AllowZeroArgs = true, MaxArgs = 255, AllArgsNumeric = true };
+
+        private static void ValidateRepeaterBegin(List<string> args, int line, string command, List<ParseError> errors, Dictionary<string, object> variables)
+            => ValidateRepeater(args, line, command, errors, variables, 9, 7, "Begin");
+
+        private static void ValidateRepeaterBegin0(List<string> args, int line, string command, List<ParseError> errors, Dictionary<string, object> variables)
+            => ValidateRepeater(args, line, command, errors, variables, 3, 1, "Begin0");
+
+        private static void ValidateRepeater(List<string> args, int line, string command, List<ParseError> errors, Dictionary<string, object> variables, int lastNumeric, int tiltIndex, string suffix)
+        {
+            for (int i = 1; i <= lastNumeric && i < args.Count; i++)
+            {
+                string arg = args[i];
+                if (string.IsNullOrWhiteSpace(arg) || string.Equals(arg, "null", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!IsValidNumericOrExpression(arg, variables))
+                {
+                    var match = VarRefRegex.Match(arg);
+                    if (match.Success && !variables.ContainsKey(match.Value.ToLowerInvariant()))
+                    {
+                        errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = $"その名前 '{match.Value}' は存在しません。" });
+                        continue;
+                    }
+                    errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = $"{command} の第 {i + 1} 引数には数値を指定してください。" });
+                }
+            }
+            if (args.Count > tiltIndex) ValidateTiltOption(args[tiltIndex], line, $"{command} ({suffix})", errors);
+        }
+
+        private static void ValidateFunction(List<string> args, int line, string command, List<ParseError> errors, Dictionary<string, object> variables)
+        {
+            if (args.Count == 0 || string.IsNullOrWhiteSpace(args[0])) return;
+            string arg = args[0];
+            if (arg.StartsWith("$"))
+            {
+                if (!variables.ContainsKey(arg.ToLowerInvariant()))
+                    errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = $"その名前 '{arg}' は存在しません。" });
+                return;
+            }
+            if (int.TryParse(arg, out int value) && (value < 0 || value > 1))
+                errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = $"{command} の引数には 0 または 1 を指定してください（現在: {value}）。" });
+        }
+
+        private static void ValidateStructureTilt(List<string> args, int line, string command, List<ParseError> errors, Dictionary<string, object> variables)
+            => ValidateTiltRange(args, 7, line, command, errors, variables, 8);
+
+        private static void ValidateStructureTilt0(List<string> args, int line, string command, List<ParseError> errors, Dictionary<string, object> variables)
+            => ValidateTiltRange(args, 1, line, command, errors, variables, 2);
+
+        private static void ValidateTiltRange(List<string> args, int index, int line, string command, List<ParseError> errors, Dictionary<string, object> variables, int argumentNumber)
+        {
+            if (args.Count <= index || string.IsNullOrWhiteSpace(args[index])) return;
+            if (args[index].StartsWith("$"))
+            {
+                if (!variables.ContainsKey(args[index].ToLowerInvariant()))
+                    errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = $"その名前 '{args[index]}' は存在しません。" });
+                return;
+            }
+            if (int.TryParse(args[index], out int tilt) && (tilt < 0 || tilt > 3))
+                errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = $"{command} の第 {argumentNumber} 引数（傾斜オプション）には 0〜3 の値を指定してください（現在: {tilt}）。" });
+        }
+
+        private static void ValidateSignalPut(List<string> args, int line, string command, List<ParseError> errors, Dictionary<string, object> variables)
+        {
+            if (args.Count != 4 && args.Count != 10)
+                errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = $"{command} の引数は 4個 または 10個 である必要があります（現在: {args.Count}個）。" });
+        }
+    }
+}

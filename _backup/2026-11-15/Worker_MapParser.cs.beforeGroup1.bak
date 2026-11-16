@@ -1,0 +1,227 @@
+﻿using DynamicExpresso;
+using System.Collections.ObjectModel;
+using System.IO;
+
+namespace BveMapParserWorker
+{
+    public class ParseError
+    {
+        public string Level { get; set; } = string.Empty;
+        public int Line { get; set; }
+        public int Column { get; set; }
+        // ★ 波線を引く長さ（文字数）。0 のときは今まで通り Column から行末まで引く
+        public int Length { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+    }
+
+    public partial class MapParser
+    {
+        private static readonly Random _bveRandom = new();
+        public ObservableCollection<ParseError> ErrorLogList { get; set; } = [];
+
+        private static Interpreter CreateAndInitializeInterpreter()
+        {
+            var interpreter = new Interpreter(InterpreterOptions.DefaultCaseInsensitive);
+            interpreter.SetFunction("abs", (Func<double, double>)Math.Abs);
+            interpreter.SetFunction("atan2", (Func<double, double, double>)Math.Atan2);
+            interpreter.SetFunction("ceil", (Func<double, double>)Math.Ceiling);
+            interpreter.SetFunction("cos", (Func<double, double>)Math.Cos);
+            interpreter.SetFunction("exp", (Func<double, double>)Math.Exp);
+            interpreter.SetFunction("floor", (Func<double, double>)Math.Floor);
+            interpreter.SetFunction("log", (Func<double, double>)Math.Log);
+            interpreter.SetFunction("pow", (Func<double, double, double>)Math.Pow);
+            interpreter.SetFunction("sin", (Func<double, double>)Math.Sin);
+            interpreter.SetFunction("sqrt", (Func<double, double>)Math.Sqrt);
+            interpreter.SetFunction("rand", (Func<double>)(() => _bveRandom.NextDouble()));
+            interpreter.SetFunction("rand", (Func<double, double>)(value => _bveRandom.NextDouble() * value));
+            
+            interpreter.SetVariable("pi", Math.PI);
+            interpreter.SetVariable("distance", 0.0);
+            return interpreter;
+        }
+
+        public static List<ParseError> Parse(string text)
+        {
+            return Parse(text, string.Empty);
+        }
+
+        public static List<ParseError> Parse(string? text, string baseDirectory)
+        {
+            return Parse(text, baseDirectory, string.Empty, null, null);
+        }
+
+        /// <summary>
+        /// ★ インクルード対応版。
+        /// rootFilePath: ルートファイルのパス / unsavedTexts: 開いているタブの未保存の内容（パス → 本文）
+        /// parentMap: 親子対応表（インクルード先 → 親）を書き込む先。null なら作らない
+        /// </summary>
+        public static List<ParseError> Parse(string? text, string baseDirectory, string rootFilePath,
+            Dictionary<string, string>? unsavedTexts, Dictionary<string, string>? parentMap)
+        {
+            return Parse(text, baseDirectory, rootFilePath, unsavedTexts, parentMap, null);
+        }
+
+        /// <summary>
+        /// ★ キーの自動補完用: keyLists に読み込んだリストのキーの一覧を書き込む（null なら作らない）
+        /// </summary>
+        public static List<ParseError> Parse(string? text, string baseDirectory, string rootFilePath,
+            Dictionary<string, string>? unsavedTexts, Dictionary<string, string>? parentMap,
+            Dictionary<string, List<string>>? keyLists)
+        {
+            var errors = new List<ParseError>();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                errors.Add(new ParseError { Line = 1, Column = 1, Message = "ファイルが空です。" });
+                return errors;
+            }
+
+            var tokens = BveLexer.Tokenize(text, errors);
+            var astNodes = BveParser.ParseTokens(tokens, errors);
+            
+            Interpreter bveInterpreter = CreateAndInitializeInterpreter();
+            HashSet<string> validCommands = GetValidCommandsSafe();
+
+            var semanticErrors = BveSemanticAnalyzer.Analyze(
+                astNodes, baseDirectory, bveInterpreter, validCommands,
+                out bool headerFound, out bool stationLoadFound, out bool soundLoadFound,
+                out bool structureLoadFound, out bool sounddLoadFound, out bool signalLoadFound,
+                out int firstStationLoadLine, out int firstSoundLoadLine,
+                rootFilePath, unsavedTexts, parentMap, keyLists
+            );
+            errors.AddRange(semanticErrors);
+
+            AddMissingLoadWarning(!stationLoadFound, "Station.Load", "必須の 'Station.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!soundLoadFound, "Sound.Load", "必須の 'Sound.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!sounddLoadFound, "Sound3D.Load", "必須の 'Sound3D.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!structureLoadFound, "Structure.Load", "必須の 'Structure.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!signalLoadFound, "Signal.Load", "必須の 'Signal.Load' が見つかりません。", errors);
+
+            // ★ 波線の範囲: エラーが指している文字（キー・ファイルパス・コマンド名など）を探して、列と長さを入れる
+            AssignErrorRanges(errors, text, unsavedTexts);
+
+            return errors;
+        }
+
+        #region 波線の範囲（エラーが指している文字の列と長さ）
+        // ★ メッセージから「エラーが指している文字」を取り出すための決まり（t が指している文字）
+        private static readonly System.Text.RegularExpressions.Regex[] ErrorTargetPatterns =
+        {
+            new(@"リストがまだロードされていないため、キー '(?<t>[^']+)' を検証できません"),
+            new(@"未知のコマンドまたは存在しない単語です: '(?<t>[^']+)'"),
+            new(@"指定されたファイルが見つかりません: '(?<t>[^']+)'"),
+            new(@"インクルード先のファイルが見つかりません: '(?<t>[^']+)'"),
+            new(@"循環インクルード（無限ループ）が検出されました: '(?<t>[^']+)'"),
+            new(@"リストファイルが見つかりません: (?<t>.+)$"),
+            new(@"トレインキー '(?<t>[^']+)' がロードされていないか"),
+            new(@"その名前 '(?<t>[^']+)' は存在しません"),
+            new(@"（値: '(?<t>[^']+)'）"),
+            new(@"^'(?<t>[A-Za-z0-9]+)' の(指定に角括弧|指定には丸括弧|後にドット)"),
+        };
+
+        /// <summary>
+        /// ★ 長さが決まっていないエラーについて、メッセージから「指している文字」を取り出し、
+        /// ファイルのその行で探して見つかれば、列（Column）と長さ（Length）を入れる。見つからなければそのまま（行末まで）。
+        /// </summary>
+        private static void AssignErrorRanges(List<ParseError> errors, string rootText, Dictionary<string, string>? unsavedTexts)
+        {
+            var linesCache = new Dictionary<string, string[]?>(StringComparer.OrdinalIgnoreCase);
+            string[]? GetLines(string fileName)
+            {
+                if (linesCache.TryGetValue(fileName, out var cached)) return cached;
+                string[]? lines = null;
+                try
+                {
+                    string? content = null;
+                    if (string.IsNullOrEmpty(fileName)) content = rootText;
+                    else if (unsavedTexts != null && unsavedTexts.TryGetValue(fileName, out var unsaved)) content = unsaved;
+                    else if (File.Exists(fileName)) content = ReadTextForRange(fileName);
+                    if (content != null) lines = content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+                }
+                catch { lines = null; }
+                linesCache[fileName] = lines;
+                return lines;
+            }
+
+            foreach (var err in errors)
+            {
+                if (err.Length > 0 || string.IsNullOrEmpty(err.Message)) continue;
+                // インクルード先のエラーはメッセージの先頭に「[ファイル名] 」が付いているので外す
+                string message = System.Text.RegularExpressions.Regex.Replace(err.Message, @"^\[[^\]]*\]\s*", string.Empty);
+                string? target = null;
+                foreach (var pattern in ErrorTargetPatterns)
+                {
+                    var m = pattern.Match(message);
+                    if (m.Success) { target = m.Groups["t"].Value.Trim(); break; }
+                }
+                if (string.IsNullOrEmpty(target)) continue;
+
+                var lines = GetLines(err.FileName ?? string.Empty);
+                if (lines == null || err.Line < 1 || err.Line > lines.Length) continue;
+                string lineText = lines[err.Line - 1];
+
+                // 行の中で target を探す。複数あれば、今の列にいちばん近いものを使う
+                int best = -1;
+                int from = 0;
+                while (true)
+                {
+                    int idx = lineText.IndexOf(target, from, StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0) break;
+                    if (best < 0 || Math.Abs(idx - (err.Column - 1)) < Math.Abs(best - (err.Column - 1))) best = idx;
+                    from = idx + 1;
+                }
+                // 変数の名前は、メッセージでは「v_名前」（内部での呼び方）になっていることがあるので「$名前」でも探す
+                if (best < 0 && target.StartsWith("v_", StringComparison.OrdinalIgnoreCase))
+                {
+                    target = "$" + target.Substring(2);
+                    best = lineText.IndexOf(target, StringComparison.OrdinalIgnoreCase);
+                }
+                if (best < 0) continue;
+                err.Column = best + 1;
+                err.Length = target.Length;
+            }
+        }
+
+        // ★ インクルード先のファイルを読む（UTF-8 として正しくなければ Shift-JIS。先頭の BOM は取り除く）
+        private static string ReadTextForRange(string filePath)
+        {
+            byte[] bytes = File.ReadAllBytes(filePath);
+            string text;
+            try { text = new System.Text.UTF8Encoding(false, true).GetString(bytes); }
+            catch (System.Text.DecoderFallbackException)
+            {
+                System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+                text = System.Text.Encoding.GetEncoding(932).GetString(bytes);
+            }
+            if (text.Length > 0 && text[0] == '﻿') text = text.Substring(1);
+            return text;
+        }
+        #endregion
+
+        private static void AddMissingLoadWarning(bool notFound, string commandName, string message, List<ParseError> errors)
+        {
+            if (notFound)
+            {
+                errors.Add(new ParseError
+                {
+                    Level = "警告",
+                    Line = 1,
+                    Column = 1,
+                    Message = message
+                });
+            }
+        }
+
+        private static HashSet<string> GetValidCommandsSafe()
+        {
+            try
+            {
+                return BveSyntaxProvider.GetValidCommands();
+            }
+            catch
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+    }
+}

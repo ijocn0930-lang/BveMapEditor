@@ -31,24 +31,20 @@ namespace BveMapEditor
             if (_textArea.Document == null) return;
 
             // 現在のキャレット（カーソル）がある行を取得
-            var currentLine = _textArea.Document.GetLineByOffset(_textArea.Caret.Offset);
+            int lineNumber = _textArea.Caret.Line;
+            if (lineNumber < 1 || lineNumber > _textArea.Document.LineCount) return;
 
-            // BackgroundGeometryBuilder を使って行の描画ジオメトリを安全に取得
-            BackgroundGeometryBuilder geoBuilder = new()
+            // ★ (2026-11-16) 行の上端と高さを、画面に並んでいる行（VisualLine）から取る
+            //    （以前は行の文字の範囲から四角を作っていたため、文字のない空の行では四角ができず、強調が出ないことがあった）
+            //    画面に見えていない行なら何も描かない。折り返し表示で1行が何段かになっても、全部の段を強調する
+            foreach (var visualLine in textView.VisualLines)
             {
-                AlignToWholePixels = true
-            };
-            geoBuilder.AddSegment(textView, new ICSharpCode.AvalonEdit.Document.TextSegment { StartOffset = currentLine.Offset, Length = currentLine.Length });
-
-            var geometry = geoBuilder.CreateGeometry();
-            if (geometry != null)
-            {
-                // ジオメトリの境界を使って行の矩形を取得し、エディタ幅いっぱいにハイライトを描画する
-                var bounds = geometry.Bounds;
-                if (!bounds.IsEmpty)
+                if (visualLine.FirstDocumentLine.LineNumber <= lineNumber && lineNumber <= visualLine.LastDocumentLine.LineNumber)
                 {
-                    var fullWidthRect = new Rect(0, bounds.Top, textView.ActualWidth, bounds.Height);
+                    double top = visualLine.VisualTop - textView.VerticalOffset;
+                    var fullWidthRect = new Rect(0, top, textView.ActualWidth, visualLine.Height);
                     drawingContext.DrawRectangle(HighlightBrush, BorderPen, fullWidthRect);
+                    break;
                 }
             }
         }

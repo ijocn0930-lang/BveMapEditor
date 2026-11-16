@@ -100,6 +100,37 @@ namespace BveMapEditor
         }
 
 
+        /// <summary>
+        /// ★ (2026-11-15) .bveep の「Folder = 」「File = 」の行から、保存したときに開いていたフォルダ（絶対パス）を集める
+        /// ある行のパスの途中にあるフォルダ（例: a\b\c.txt なら a と a\b）は、中身が見えていた＝開いていた
+        /// </summary>
+        private static HashSet<string> GetExpandedFoldersFromBveepEntries(IEnumerable<string> entries, string rootPath)
+        {
+            var expanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in entries)
+            {
+                int eq = entry.IndexOf('=');
+                if (eq < 0) continue;
+                string relative = entry[(eq + 1)..].Trim();
+                if (string.IsNullOrEmpty(relative)) continue;
+
+                string? parent = Path.GetDirectoryName(relative);
+                while (!string.IsNullOrEmpty(parent))
+                {
+                    try
+                    {
+                        expanded.Add(Path.GetFullPath(Path.Combine(rootPath, parent)));
+                    }
+                    catch
+                    {
+                        break; // 変なパスは無視
+                    }
+                    parent = Path.GetDirectoryName(parent);
+                }
+            }
+            return expanded;
+        }
+
         // メニュー：「名前を付けて保存」
         private void MenuSaveAsBveep_Click(object sender, RoutedEventArgs e)
         {
@@ -168,6 +199,15 @@ namespace BveMapEditor
                     return;
                 }
 
+                // ★ (2026-11-15) Windows・Program Files などのシステムのフォルダ（とその中）は開かない
+                if (IsForbiddenSystemPath(currentDir))
+                {
+                    MessageBox.Show($"Windows や Program Files などのシステムのフォルダは開けません。\n\nフォルダ: {currentDir}", "エクスプローラーペインを開く", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    FileExplorerTreeView.Items.Clear();
+                    _currentRootFolderPath = string.Empty;
+                    return;
+                }
+
                 // アクセス権限チェック
                 try
                 {
@@ -189,6 +229,9 @@ namespace BveMapEditor
                 }
                 _currentRootFolderPath = currentDir;
                 _currentBveepFilePath = filePath;
+                // ★ (2026-11-15) ファイルの見張りを新しいフォルダに付け替える
+                //    （以前は付け替えていなかったため、.bveep を開いた後はファイルが増えてもツリーに出ず、前のフォルダの変更でツリーが作り直されていた）
+                SetupFileSystemWatcher(currentDir);
 
                 // 3. 選択状態の読み込み (3行目)
                 string selectedPath = string.Empty;
@@ -244,6 +287,15 @@ namespace BveMapEditor
                 {
                     // 有効なエントリのみを元にフィルタリング・復元する処理
                     LoadFileSystemToTreeView(rootNode);
+
+                    // ★ (2026-11-15) 保存したときに開いていたフォルダを開き直す
+                    //    （以前は行を読むだけで使っておらず、一番上のフォルダだけ開いた状態になっていた）
+                    //    保存の行は、開いていたフォルダの中身だけが書かれる（CollectTreeState）→ 中身の行があるフォルダ＝開いていたフォルダ
+                    var expandedFolders = GetExpandedFoldersFromBveepEntries(rawEntries, _currentRootFolderPath);
+                    foreach (var item in FileExplorerTreeView.Items.OfType<TreeViewItem>())
+                    {
+                        RestoreTreeState(item, expandedFolders, null);
+                    }
 
                     // 選択状態の復元（存在しない場合は警告なしで解除）
                     if (!string.IsNullOrEmpty(selectedPath))

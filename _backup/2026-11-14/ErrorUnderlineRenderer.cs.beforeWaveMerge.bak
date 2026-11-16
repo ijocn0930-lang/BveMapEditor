@@ -1,0 +1,117 @@
+﻿using ICSharpCode.AvalonEdit.Rendering;
+using System.Windows;
+using System.IO;
+using System.Windows.Media;
+using BveMapParserWorker;
+
+namespace BveMapEditor
+{
+    internal class ErrorUnderlineRenderer : IBackgroundRenderer
+    {
+        private readonly ICSharpCode.AvalonEdit.TextEditor? _editor;
+        private List<ParseError> _errors = new List<ParseError>();
+
+        // ★ 現在は使っていない（絞り込みは MainWindow.xaml.cs の RunSyntaxCheck で行う）
+        public string CurrentFileName { get; set; } = string.Empty;
+
+        public ErrorUnderlineRenderer(ICSharpCode.AvalonEdit.TextEditor editor)
+        {
+            _editor = editor;
+            if (_editor?.TextArea?.TextView != null)
+            {
+                _editor.TextArea.TextView.LayoutUpdated += (s, e) =>
+                {
+                    if (_errors.Count > 0)
+                    {
+                        _editor.TextArea.TextView.InvalidateVisual();
+                    }
+                };
+            }
+        }
+
+        public void SetErrors(IEnumerable<ParseError> errors)
+        {
+            _errors = [.. errors];
+            if (_editor?.Dispatcher != null)
+            {
+                _editor.Dispatcher.InvokeAsync(() =>
+                {
+                    var textView = _editor.TextArea?.TextView;
+                    textView?.Redraw();
+                }, System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+        }
+
+        public KnownLayer Layer => KnownLayer.Selection;
+
+        public void Draw(TextView textView, DrawingContext drawingContext)
+        {
+            if (_editor?.Document == null || _errors == null || _errors.Count == 0) return;
+
+            // ★ 「このタブのエラーだけ」への絞り込みは、呼び出し側（MainWindow.xaml.cs の RunSyntaxCheck）で済ませている。
+            //    ここでも絞り込むと、CurrentFileName が設定されていないため、インクルード先のタブの波線が消えてしまう。
+            //    そのため、渡されたエラーをそのまま描画する。
+            var filteredErrors = _errors;
+
+            // ★ エラー・警告ごとに波線を引く（以前は行ごとに1本、行の中で一番左の位置から行末まで）
+            //    警告（オレンジ）を先に描き、エラー（赤）を後に描くことで、重なった部分はエラーの赤が上に来る
+            static bool IsError(ParseError e) => string.Equals(e.Level, "エラー", StringComparison.OrdinalIgnoreCase);
+            var orderedErrors = filteredErrors
+                .Where(e => e.Line >= 1 && e.Line <= _editor.Document.LineCount)
+                .OrderBy(e => IsError(e) ? 1 : 0);
+
+            foreach (var err in orderedErrors)
+            {
+                try
+                {
+                    var lineObj = _editor.Document.GetLineByNumber(err.Line);
+                    Brush waveBrush = IsError(err) ? Brushes.Red : Brushes.Orange;
+
+                    int startInLine = Math.Max(0, Math.Min(err.Column - 1, lineObj.Length));
+                    int startOffset = lineObj.Offset + startInLine;
+                    // Length が 0 のときは今まで通り行末まで。指定があればその長さだけ（行末を超えない）
+                    int endOffset = err.Length > 0
+                        ? Math.Min(startOffset + err.Length, lineObj.EndOffset)
+                        : lineObj.EndOffset;
+                    if (endOffset <= startOffset) continue;
+
+                    var segment = new ICSharpCode.AvalonEdit.Document.TextSegment
+                    {
+                        StartOffset = startOffset,
+                        EndOffset = endOffset
+                    };
+
+                    foreach (var rect in BackgroundGeometryBuilder.GetRectsForSegment(textView, segment))
+                    {
+                        DrawWave(drawingContext, waveBrush, rect.BottomLeft, rect.BottomRight);
+                    }
+                }
+                catch
+                {
+                    // 描画例外のガード
+                }
+            }
+        }
+
+        private static void DrawWave(DrawingContext dc, Brush brush, Point start, Point end)
+        {
+            double waveHeight = 3.0;
+            double waveWidth = 7.0;
+            var geometry = new StreamGeometry();
+            using (var context = geometry.Open())
+            {
+                context.BeginFigure(start, false, false);
+                for (double x = start.X; x < end.X; x += waveWidth)
+                {
+                    double nextX = Math.Min(x + waveWidth / 2, end.X);
+                    double nextX2 = Math.Min(x + waveWidth, end.X);
+                    context.QuadraticBezierTo(new Point((x + nextX) / 2, start.Y + waveHeight), new Point(nextX, start.Y), true, false);
+                    if (nextX2 >= end.X) break;
+                    context.QuadraticBezierTo(new Point((nextX + nextX2) / 2, start.Y - waveHeight), new Point(nextX2, start.Y), true, false);
+                }
+            }
+            geometry.Freeze();
+            dc.DrawGeometry(null, new Pen(brush, 1.0), geometry);
+        }
+    }
+}

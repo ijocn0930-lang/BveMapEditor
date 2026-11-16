@@ -1,0 +1,1456 @@
+﻿using DynamicExpresso;
+using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
+namespace BveMapParserWorker
+{
+    public static partial class BveSemanticAnalyzer
+    {
+        // パイプ通信用の型定義
+        public class ParseRequest
+        {
+            public string RouteFilePath { get; set; } = string.Empty;
+            public string RouteText { get; set; } = string.Empty;
+            public Dictionary<string, string> UnsavedTexts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        }
+        public class ParseResponse
+        {
+            public List<ParseError> Errors { get; set; } = new();
+            public Dictionary<string, string> ParentMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+            // ★ キーの自動補完用: 読み込んだリストのキーの一覧（"Structure" / "Sound" / "Sound3D" / "Station" / "Signal" / "Train" → キー）
+            public Dictionary<string, List<string>> KeyLists { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        }
+        private static readonly string[] KnownNamespaces = {
+            "Sound", "Signal", "Structure", "Background", "Fog", "Light", "Gradient", "Curve", "Beacon", "Section", "Train", "DrawDistance", "CabIlluminance", "Irregularity", "Adhesion", "RollingNoise", "JointNoise", "FlangeNoise", "Legacy"
+        };
+        private static readonly string[] KeyRequiredNamespaces = {
+            "Sound", "Structure", "Signal", "Repeater", "Sound3D", "Track", "Train", "Station"
+        };
+        // Pre-compiled Regex patterns for high performance
+        private static readonly Regex InvalidCharRegex = new Regex(@"&([A-Za-z0-9_]+)", RegexOptions.Compiled);
+        private static readonly Regex MissingOperatorRegex = new Regex(@"(\b\d+(?:\.\d+)?|\$[A-Za-z0-9_]+|\))\s+\(", RegexOptions.Compiled);
+        private static readonly Regex ConsecutiveBracketsRegex = new Regex(@"\)\s*\(", RegexOptions.Compiled);
+        private static readonly Regex LoadCommandRegex = new Regex(@"\b[A-Za-z0-9]+\.Load\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex VarRefRegex = new Regex(@"\$[A-Za-z0-9_]*", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        private static readonly Regex BveExRegex = new Regex(@"\bBveEx(\.User)?\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex IncludeRegex = new Regex(@"\binclude\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex IncludeAssignRegex = new Regex(@"\binclude\s*=", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // ★ include 'a.txt' / include "a.txt" のファイル名部分を読み取る
+        //    （以前は (\['"\]) となっていて「['"]」という4文字そのものを探していたため、正しい include が一致しなかった）
+        private static readonly Regex IncludePathRegex = new Regex(@"\binclude\s+(['""])(.*?)\1", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        #region Analyze
+        // ★ 整理 (2026-11-15): どこからも呼ばれていなかった CheckIncludeSyntaxWithUnsaved を削除（未保存タブ・親子対応表の対応は CheckIncludeSyntaxInternal にある）
+    
+
+public static List<ParseError> Analyze(
+            List<AstNode> astNodes,
+            string baseDirectory,
+            Interpreter bveInterpreter,
+            HashSet<string> validCommands,
+            out bool headerFound,
+            out bool stationLoadFound,
+            out bool soundLoadFound,
+            out bool structureLoadFound,
+            out bool sounddLoadFound,
+            out bool signalLoadFound,
+            out int firstStationLoadLine,
+            out int firstSoundLoadLine,
+            // ★ インクルード用（省略可）: ルートファイルのパス / 開いているタブの未保存の内容 / 親子対応表（インクルード先 → 親）を書き込む先
+            string rootFilePath = "",
+            Dictionary<string, string>? unsavedTexts = null,
+            Dictionary<string, string>? parentMap = null,
+            // ★ キーの自動補完用（省略可）: 読み込んだリストのキーの一覧を書き込む先
+            Dictionary<string, List<string>>? keyLists = null)
+        {
+            var errors = new List<ParseError>();
+
+            // ★ ヘッダー有無の判定（先頭付近やAST内にBveTs Map等のヘッダーが存在するか）
+            headerFound = astNodes.Any(node => node is CommandNode cn && 
+                (cn.RawStatement.StartsWith("BveTs Map", StringComparison.OrdinalIgnoreCase) || 
+                 cn.Namespace.Equals("BveTs", StringComparison.OrdinalIgnoreCase) ||
+                 cn.RawStatement.Contains("BveTs Map", StringComparison.OrdinalIgnoreCase)));
+
+            stationLoadFound = false;
+            soundLoadFound = false;
+            structureLoadFound = false;
+            sounddLoadFound = false;
+            signalLoadFound = false;
+            firstStationLoadLine = -1;
+            firstSoundLoadLine = -1;
+            bool isStructureLoaded = false, isSoundLoaded = false, isSound3DLoaded = false, isStationLoaded = false, isSignalLoaded = false;
+            var structureKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var soundKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var sound3DKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var stationKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var signalKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var trainKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var encounteredStations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var loadedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var variableValues = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            var definedVariables = new List<(string Name, int Line)>();
+            bool hasHitDistance = false;
+            int speedLimitCount = 0;
+            bool hasCurveBeginTransition = false, hasGradientBeginTransition = false;
+            bool isCurveCantActive = false, isGradientActive = false;
+            var trackBeginTransitionStates = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var trackCantActiveStates = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var trackCantGaugeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool isCurveGaugeSet = false;
+            double currentDistance = 0.0;
+            double? lastCabValue = null;
+            double lastCabDistance = 0.0;
+            try
+            {
+                foreach (var node in astNodes)
+                {
+                    if (node is DistanceNode distNode)
+                    {
+                        if (ContainsVariableReference(distNode.Expression)) continue;
+                        hasHitDistance = true;
+                        bveInterpreter.SetVariable("distance", currentDistance);
+                        double prevDistance = currentDistance; // ★ 式の中の distance は「直前の距離程」
+                        currentDistance = EvaluateDistance(distNode.Expression, variableValues, bveInterpreter, prevDistance);
+                        CheckDistanceComma(distNode.Expression, distNode.Line, errors);
+                        CheckInvalidCharacters(distNode.Expression, distNode.Line, errors);
+                        CheckMissingOperator(distNode.Expression, distNode.Line, errors);
+                        CheckDistanceValue(distNode.Expression, distNode.Line, variableValues, bveInterpreter, errors, "", prevDistance);
+                        CheckBrackets(distNode.Expression, distNode.Line, errors);
+                        CheckConsecutiveBrackets(distNode.Expression, distNode.Line, errors);
+                        CheckFullWidthSpace(distNode.Expression, distNode.Line, errors);
+                        continue;
+                    }
+                    if (node is VariableAssignmentNode varNode)
+                    {
+                        TryHandleVariableAssignmentAst(varNode, errors, definedVariables, variableValues, bveInterpreter);
+                        continue;
+                    }
+                    if (node is not CommandNode cmdNode) continue;
+                    string code = cmdNode.RawStatement;
+                    int line = cmdNode.Line;
+                    if (ContainsVariableReference(code)) continue;
+                    CheckInvalidCharacters(code, line, errors);
+                    CheckMissingOperator(code, line, errors);
+                    CheckBrackets(code, line, errors);
+                    CheckConsecutiveBrackets(code, line, errors);
+                    CheckDuplicateLoad(cmdNode, loadedCommands, errors);
+                    CheckFullWidthSpace(code, line, errors);
+                    CheckNamespaceDot(code, line, errors);
+                    CheckKeyRequiredBrackets(code, line, errors);
+                    CheckBracketContent(code, line, errors);
+                    CheckLoadCommandFile(code, line, baseDirectory, line, errors);
+                    if (CheckIncludeSyntax(code, baseDirectory, line, errors, bveInterpreter, variableValues, definedVariables, ref currentDistance, rootFilePath, unsavedTexts, parentMap)) continue;
+                    CheckRequiredArguments(code, line, errors);
+                    CheckInvalidParentheses(code, line, errors);
+                    CheckNoArgMethodsAst(cmdNode, errors);
+                    CheckCommandArguments(cmdNode, line, errors, variableValues, bveInterpreter);
+                    string fullCmdName = string.IsNullOrEmpty(cmdNode.MethodName) ? cmdNode.Namespace : $"{cmdNode.Namespace}.{cmdNode.MethodName}";
+                    if (cmdNode.Namespace.Equals("CabIlluminance", StringComparison.OrdinalIgnoreCase) &&
+                        (cmdNode.MethodName.Equals("Interpolate", StringComparison.OrdinalIgnoreCase) || cmdNode.MethodName.Equals("Set", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        EvaluateCabIlluminance(cmdNode, line, fullCmdName, variableValues, bveInterpreter, currentDistance, ref lastCabValue, ref lastCabDistance, errors);
+                    }
+                    if (cmdNode.Namespace.Equals("Curve", StringComparison.OrdinalIgnoreCase) &&
+                        (cmdNode.MethodName.Equals("SetGauge", StringComparison.OrdinalIgnoreCase) || cmdNode.MethodName.Equals("Gauge", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        isCurveGaugeSet = true;
+                    }
+                    if (cmdNode.MethodName.Equals("BeginTransition", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (cmdNode.Namespace.Equals("Curve", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (hasCurveBeginTransition) errors.Add(new ParseError { Level = "警告", Line = line, Column = cmdNode.Column, Message = "Curve.BeginTransition(); を2か所連続して配置できません。" });
+                            hasCurveBeginTransition = true;
+                        }
+                        else if (cmdNode.Namespace.Equals("Gradient", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (hasGradientBeginTransition) errors.Add(new ParseError { Level = "警告", Line = line, Column = cmdNode.Column, Message = "Gradient.BeginTransition(); を2か所連続して配置できません。" });
+                            hasGradientBeginTransition = true;
+                        }
+                    }
+                    else if (cmdNode.Namespace.Equals("Curve", StringComparison.OrdinalIgnoreCase) &&
+                             (cmdNode.MethodName.Equals("Begin", StringComparison.OrdinalIgnoreCase) || cmdNode.MethodName.Equals("BeginCircular", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        bool hasCant = cmdNode.Arguments.Count >= 2 && !string.Equals(cmdNode.Arguments[1].Trim(), "0", StringComparison.OrdinalIgnoreCase);
+                        if (hasCant)
+                        {
+                            if (!isCurveGaugeSet) errors.Add(new ParseError { Level = "エラー", Line = line, Column = cmdNode.Column, Message = "Curve.SetGauge が設定される前にカント付きの Curve 操作が行われています。事前に Curve.SetGauge または Curve.Gauge を設定してください。" });
+                            if (!hasCurveBeginTransition) errors.Add(new ParseError { Level = "エラー", Line = line, Column = cmdNode.Column, Message = "'BeginTransition' is required before 'Begin'." });
+                            isCurveCantActive = true;
+                        }
+                        else { isCurveCantActive = false; }
+                        hasCurveBeginTransition = false;
+                    }
+                    else if (cmdNode.Namespace.Equals("Curve", StringComparison.OrdinalIgnoreCase) && cmdNode.MethodName.Equals("End", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (isCurveCantActive && !hasCurveBeginTransition) errors.Add(new ParseError { Level = "エラー", Line = line, Column = cmdNode.Column, Message = "'BeginTransition' is required before 'End'." });
+                        isCurveCantActive = false;
+                        hasCurveBeginTransition = false;
+                    }
+                    else if (cmdNode.Namespace.Equals("Gradient", StringComparison.OrdinalIgnoreCase) &&
+                             (cmdNode.MethodName.Equals("Begin", StringComparison.OrdinalIgnoreCase) || cmdNode.MethodName.Equals("BeginConst", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (!hasGradientBeginTransition) errors.Add(new ParseError { Level = "エラー", Line = line, Column = cmdNode.Column, Message = "'BeginTransition' is required before 'Begin'." });
+                        isGradientActive = true;
+                        hasGradientBeginTransition = false;
+                    }
+                    else if (cmdNode.Namespace.Equals("Gradient", StringComparison.OrdinalIgnoreCase) && cmdNode.MethodName.Equals("End", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (isGradientActive && !hasGradientBeginTransition) errors.Add(new ParseError { Level = "エラー", Line = line, Column = cmdNode.Column, Message = "'BeginTransition' is required before 'End'." });
+                        isGradientActive = false;
+                        hasGradientBeginTransition = false;
+                    }
+                    if (cmdNode.Namespace.Equals("Track", StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(cmdNode.Key) &&
+                        (cmdNode.MethodName.StartsWith("Cant.", StringComparison.OrdinalIgnoreCase) ||
+                         cmdNode.MethodName.Equals("Gauge", StringComparison.OrdinalIgnoreCase))) // ★ Track[].Gauge も軌間の設定として扱う
+                    {
+                        ValidateTrackCant(cmdNode, line, trackCantGaugeSet, trackBeginTransitionStates, trackCantActiveStates, errors);
+                    }
+                    // ★ ここにあった2回目の CheckIncludeSyntax は削除した
+                    //    （include の行は上の CheckIncludeSyntax で continue 済みのため、ここでは必ず false になり意味がなかった）
+                    if (CheckBveExSyntax(code, line, errors)) continue;
+                    CheckUnknownCommand(code, validCommands, line, errors);
+                    if (code.Contains("Section.SetSpeedLimit", StringComparison.OrdinalIgnoreCase) ||
+                        code.Contains("Signal.SpeedLimit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        speedLimitCount++;
+                        if (speedLimitCount >= 2)
+                        {
+                            errors.Add(new ParseError { Level = "エラー", Line = line, Column = 1, Message = "Section.SetSpeedLimit または Signal.SpeedLimit が複数記述されています。この構文は信号指示速度のため、マップファイル全体で1つしか記述できません。" });
+                        }
+                    }
+                    if (cmdNode.MethodName.Equals("Load", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (cmdNode.Namespace.Equals("Station", StringComparison.OrdinalIgnoreCase))
+                        {
+                            stationLoadFound = true;
+                            if (firstStationLoadLine == -1) firstStationLoadLine = line;
+                            ProcessListLoadCommand(cmdNode, baseDirectory, "BveTs Station List", stationKeys, errors, line, ref isStationLoaded);
+                        }
+                        else if (cmdNode.Namespace.Equals("Sound", StringComparison.OrdinalIgnoreCase))
+                        {
+                            soundLoadFound = true;
+                            if (firstSoundLoadLine == -1) firstSoundLoadLine = line;
+                            ProcessListLoadCommand(cmdNode, baseDirectory, "BveTs Sound List", soundKeys, errors, line, ref isSoundLoaded);
+                        }
+                        else if (cmdNode.Namespace.Equals("Signal", StringComparison.OrdinalIgnoreCase))
+                        {
+                            signalLoadFound = true;
+                            ProcessListLoadCommand(cmdNode, baseDirectory, "BveTs Signal Aspects List", signalKeys, errors, line, ref isSignalLoaded);
+                        }
+                        else if (cmdNode.Namespace.Equals("Structure", StringComparison.OrdinalIgnoreCase))
+                        {
+                            structureLoadFound = true;
+                            // ★ 他のリストと同じ読み込み方にした
+                            //   （以前は Station.Load より後に書かれた Structure.Load ではキーを読み込まず、
+                            //     それなのに「読み込み済み」になるため、すべての Structure キーが「存在しません」になっていた）
+                            ProcessListLoadCommand(cmdNode, baseDirectory, "BveTs Structure List", structureKeys, errors, line, ref isStructureLoaded);
+                        }
+                        else if (cmdNode.Namespace.Equals("Sound3D", StringComparison.OrdinalIgnoreCase))
+                        {
+                            sounddLoadFound = true;
+                            ProcessListLoadCommand(cmdNode, baseDirectory, "BveTs Sound List", sound3DKeys, errors, line, ref isSound3DLoaded);
+                        }
+                    }
+                    CheckAndLoadTrainCommandAst(cmdNode, baseDirectory, trainKeys, errors, line);
+                    
+                    // ★ ヘッダーが存在する場合のみキー存在チェックを実行する（ヘッダーがなく親も不明なファイルでは誤検知を防ぐためスキップ）
+                    if (headerFound)
+                    {
+                        CheckTrainKeyExistsAst(cmdNode, trainKeys, errors);
+                        if (hasHitDistance && LoadCommandRegex.IsMatch(code))
+                        {
+                            errors.Add(new ParseError { Level = "警告", Line = line, Column = 1, Message = "Load系コマンドは、距離程よりも前のファイル上部に配置してください。" });
+                        }
+                        CheckElementKeyExistsAst(cmdNode, isStructureLoaded, structureKeys, "Structure", errors);
+                        CheckElementKeyExistsAst(cmdNode, isSoundLoaded, soundKeys, "Sound", errors);
+                        CheckElementKeyExistsAst(cmdNode, isSignalLoaded, signalKeys, "Signal", errors);
+                        CheckElementKeyExistsAst(cmdNode, isSound3DLoaded, sound3DKeys, "Sound3D", errors);
+                        CheckElementKeyExistsAst(cmdNode, isStationLoaded, stationKeys, "Station", errors);
+                        CheckRepeaterKeysAst(cmdNode, isStructureLoaded, structureKeys, errors);
+                    }
+
+                    if (cmdNode.Namespace.Equals("Station", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(cmdNode.Key))
+                    {
+                        if (!encounteredStations.Add(cmdNode.Key))
+                        {
+                            errors.Add(new ParseError
+                            {
+                                Level = "エラー",
+                                Line = line,
+                                Column = cmdNode.Column,
+                                Message = $"ステーションキー '{cmdNode.Key}' が重複して記述されています。同じ駅を複数配置すると、駅ジャンプやシミュレーションに支障をきたす原因になります。"
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add(new ParseError
+                {
+                    Level = "エラー",
+                    Line = 1,
+                    Column = 1,
+                    Message = $"意味解析中に予期せぬ例外が発生しました: {ex.Message} [{ex.GetType().Name}]"
+                });
+            }
+            // ★ キーの自動補完用: 読み込んだキーを名前順に並べて渡す
+            if (keyLists != null)
+            {
+                static List<string> Sorted(HashSet<string> keys) => keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+                keyLists["Structure"] = Sorted(structureKeys);
+                keyLists["Sound"] = Sorted(soundKeys);
+                keyLists["Sound3D"] = Sorted(sound3DKeys);
+                keyLists["Station"] = Sorted(stationKeys);
+                keyLists["Signal"] = Sorted(signalKeys);
+                keyLists["Train"] = Sorted(trainKeys);
+            }
+            return errors;
+        }
+        #endregion
+        private static void ProcessListLoadCommand(CommandNode cmdNode, string baseDirectory, string headerPrefix, HashSet<string> targetKeys, List<ParseError> errors, int line, ref bool isLoadedFlag)
+        {
+            if (cmdNode.Arguments.Count == 0) return;
+            string csvPath = cmdNode.Arguments[0].Trim('\'', '"');
+            string fullPath = string.IsNullOrEmpty(baseDirectory) ? csvPath : Path.Combine(baseDirectory, csvPath);
+            LoadKeysFromCsv(fullPath, headerPrefix, targetKeys, errors, line);
+            isLoadedFlag = true;
+        }
+        #region Command Validation Helpers
+        private static void EvaluateCabIlluminance(CommandNode cmdNode, int line, string fullCmdName, Dictionary<string, object> variableValues, Interpreter bveInterpreter, double currentDistance, ref double? lastCabValue, ref double lastCabDistance, List<ParseError> errors)
+        {
+            if (cmdNode.Arguments.Count == 0) return;
+            string argStr = cmdNode.Arguments[0];
+            if (!IsValidNumericOrExpression(argStr, variableValues)) return;
+            try
+            {
+                ConfigureInterpreter(bveInterpreter);
+                SetInterpreterVariables(bveInterpreter, variableValues);
+                var evalRes = bveInterpreter.Eval(NormalizeVariableExpression(argStr));
+                double cabVal = Convert.ToDouble(evalRes);
+                if (cabVal < 0 || cabVal > 1)
+                {
+                    errors.Add(new ParseError
+                    {
+                        Level = "エラー",
+                        Line = line,
+                        Column = cmdNode.Column,
+                        Message = $"{fullCmdName} の引数には 0 以上 1 以下の値を指定してください（現在: {cabVal}）。"
+                    });
+                }
+                if (lastCabValue.HasValue)
+                {
+                    double deltaDist = currentDistance - lastCabDistance;
+                    double deltaVal = cabVal - lastCabValue.Value;
+                    if (deltaDist <= 0.0001)
+                    {
+                        if (Math.Abs(deltaVal) > 0.0)
+                        {
+                            errors.Add(new ParseError
+                            {
+                                Level = "警告",
+                                Line = line,
+                                Column = cmdNode.Column,
+                                Message = $"同一または極めて近い距離程で CabIlluminance の値が急変しているため（距離差: {deltaDist}m）、通過時にエラーやオーバーシュートが発生する恐れがあります。"
+                            });
+                        }
+                    }
+                    else
+                    {
+                        double rate = Math.Abs(deltaVal) / deltaDist;
+                        if (rate > 1.0)
+                        {
+                            errors.Add(new ParseError
+                            {
+                                Level = "警告",
+                                Line = line,
+                                Column = cmdNode.Column,
+                                Message = $"CabIlluminance の変化率が大きすぎるため（距離差: {deltaDist}m, 変化量: {deltaVal:F2}, 変化率: {rate:F2}）、通過時に 0 未満または 1 を超えるオーバーシュートが発生する恐れがあります。"
+                            });
+                        }
+                    }
+                }
+                lastCabValue = cabVal;
+                lastCabDistance = currentDistance;
+            }
+            catch { }
+        }
+        #endregion
+        private static void ValidateTrackCant(CommandNode cmdNode, int line, HashSet<string> trackCantGaugeSet, Dictionary<string, bool> trackBeginTransitionStates, Dictionary<string, bool> trackCantActiveStates, List<ParseError> errors)
+        {
+            string trackKey = cmdNode.Key!.Trim();
+            if (cmdNode.MethodName.Equals("Cant.SetGauge", StringComparison.OrdinalIgnoreCase) ||
+                cmdNode.MethodName.Equals("Cant.Gauge", StringComparison.OrdinalIgnoreCase) ||
+                cmdNode.MethodName.Equals("Gauge", StringComparison.OrdinalIgnoreCase)) // ★ Track[].Gauge（Cant.SetGauge と同じ）も軌間を設定したと扱う
+            {
+                trackCantGaugeSet.Add(trackKey);
+            }
+            else if (!cmdNode.MethodName.Equals("Cant.SetCenter", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!trackCantGaugeSet.Contains(trackKey))
+                {
+                    errors.Add(new ParseError
+                    {
+                        Level = "エラー",
+                        Line = line,
+                        Column = cmdNode.Column,
+                        Message = $"Track['{trackKey}'].Cant.SetGauge(); が設定される前にカント操作が行われています。事前に Cant.SetGauge を設定してください。"
+                    });
+                }
+            }
+            if (!trackBeginTransitionStates.ContainsKey(trackKey))
+            {
+                trackBeginTransitionStates[trackKey] = false;
+                trackCantActiveStates[trackKey] = false;
+            }
+            if (cmdNode.MethodName.Equals("Cant.BeginTransition", StringComparison.OrdinalIgnoreCase))
+            {
+                if (trackBeginTransitionStates[trackKey])
+                {
+                    errors.Add(new ParseError { Level = "警告", Line = line, Column = cmdNode.Column, Message = $"Track['{trackKey}'].Cant.BeginTransition(); を2か所連続して配置できません。" });
+                }
+                trackBeginTransitionStates[trackKey] = true;
+            }
+            else if (cmdNode.MethodName.Equals("Cant.Begin", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!trackBeginTransitionStates[trackKey])
+                {
+                    errors.Add(new ParseError { Level = "エラー", Line = line, Column = cmdNode.Column, Message = "'BeginTransition' is required before 'Begin'." });
+                }
+                trackCantActiveStates[trackKey] = true;
+                trackBeginTransitionStates[trackKey] = false;
+            }
+            else if (cmdNode.MethodName.Equals("Cant.End", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!trackBeginTransitionStates[trackKey])
+                {
+                    errors.Add(new ParseError { Level = "エラー", Line = line, Column = cmdNode.Column, Message = "'BeginTransition' is required before 'End'." });
+                }
+                trackCantActiveStates[trackKey] = false;
+                trackBeginTransitionStates[trackKey] = false;
+            }
+        }
+        // distanceVar: 式の中の「distance」の値（直前の距離程）。null なら distance を含む式は Eval で計算する
+        private static double EvaluateDistance(string expr, Dictionary<string, object> variableValues, Interpreter interpreter, double? distanceVar = null)
+        {
+            if (string.IsNullOrWhiteSpace(expr)) return 0.0;
+            // ★ 高速化: ただの数字（例: 1234.5）なら、重い計算式の評価（Eval）を使わずにそのまま数値にする
+            if (TryParsePlainNumber(expr, out double plainValue)) return plainValue;
+            // ★ 高速化: 「1320 + $WK02」「distance + 25」のような、足し算・引き算だけの式も Eval を使わずに計算する
+            if (TryEvaluateSimpleSum(expr, variableValues, distanceVar, out double sumValue)) return sumValue;
+            try
+            {
+                ConfigureInterpreter(interpreter);
+                SetInterpreterVariables(interpreter, variableValues);
+                var evalResult = interpreter.Eval(NormalizeVariableExpression(expr));
+                if (evalResult != null) return Convert.ToDouble(evalResult);
+            }
+            catch
+            {
+                if (double.TryParse(expr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double dVal))
+                    return dVal;
+            }
+            return 0.0;
+        }
+        private static void CheckDistanceComma(string expr, int lineNumber, List<ParseError> errors, string fileName = "")
+        {
+            if (!string.IsNullOrEmpty(expr) && expr.Contains(','))
+            {
+                errors.Add(CreateError("エラー", lineNumber, 1, "距離程にカンマを付けることはできません。", fileName));
+            }
+        }
+        private static void CheckInt32Range(string expr, int lineNumber, List<ParseError> errors, Dictionary<string, object> variableValues, Interpreter interpreter, string fileName = "")
+        {
+            if (string.IsNullOrWhiteSpace(expr)) return;
+            if (double.TryParse(expr.Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double numericValue))
+            {
+                if (numericValue > int.MaxValue || numericValue < int.MinValue)
+                    errors.Add(CreateError("エラー", lineNumber, 1, $"Cannot convert literal {expr.Trim()} to type Int32.", fileName));
+                return;
+            }
+            try
+            {
+                ConfigureInterpreter(interpreter);
+                SetInterpreterVariables(interpreter, variableValues);
+                var evalResult = interpreter.Eval(NormalizeVariableExpression(expr));
+                if (evalResult != null)
+                {
+                    double val = Convert.ToDouble(evalResult);
+                    if (val > int.MaxValue || val < int.MinValue)
+                        errors.Add(CreateError("エラー", lineNumber, 1, $"Cannot convert literal {expr.Trim()} to type Int32.", fileName));
+                }
+            }
+            catch
+            {
+                if (double.TryParse(expr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double dVal))
+                {
+                    if (dVal > int.MaxValue || dVal < int.MinValue)
+                        errors.Add(CreateError("エラー", lineNumber, 1, $"Cannot convert literal {expr.Trim()} to type Int32.", fileName));
+                }
+            }
+        }
+        // ★ 高速化用: 計算式ではない「ただの数字」かどうかを調べ、そうなら数値を返す
+        //    （桁区切りのカンマなどは含めない。その場合は今まで通り Eval 側で扱う）
+        private static bool TryParsePlainNumber(string expr, out double value)
+        {
+            return double.TryParse(expr.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value);
+        }
+        // ★ 高速化用: 「数字や変数を + / - でつないだだけの式」（例: 1320 + $WK02、$KM - 15.5、100 + $A + $B）
+        private static readonly Regex SimpleSumRegex = new Regex(
+            @"^\s*(?<first>[+-]?\s*(?:\d+(?:\.\d+)?|\$[A-Za-z0-9_]+|(?i:distance)\b))(?<rest>\s*[+-]\s*(?:\d+(?:\.\d+)?|\$[A-Za-z0-9_]+|(?i:distance)\b))*\s*$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// ★ 高速化用: 数字と変数の足し算・引き算だけの式なら、Eval を使わずに計算する。
+        /// 計算できない場合（掛け算・関数・未定義の変数・文字列の変数など）は false を返し、今まで通り Eval で計算する。
+        /// </summary>
+        private static bool TryEvaluateSimpleSum(string expr, Dictionary<string, object> variableValues, out double value)
+            => TryEvaluateSimpleSum(expr, variableValues, null, out value);
+
+        // distanceVar: 「distance」の値。null のときに distance が出てきたら false（Eval に任せる）
+        private static bool TryEvaluateSimpleSum(string expr, Dictionary<string, object> variableValues, double? distanceVar, out double value)
+        {
+            value = 0.0;
+            var match = SimpleSumRegex.Match(expr);
+            if (!match.Success) return false;
+
+            var parts = new List<string> { match.Groups["first"].Value };
+            foreach (Capture c in match.Groups["rest"].Captures) parts.Add(c.Value);
+
+            foreach (string rawPart in parts)
+            {
+                string part = rawPart.Replace(" ", string.Empty).Replace("\t", string.Empty);
+                double sign = 1.0;
+                if (part.StartsWith('+')) part = part.Substring(1);
+                else if (part.StartsWith('-')) { sign = -1.0; part = part.Substring(1); }
+
+                double termValue;
+                if (part.Equals("distance", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 組み込み変数 distance（直前の距離程）
+                    if (distanceVar == null) return false;
+                    termValue = distanceVar.Value;
+                }
+                else if (part.StartsWith('$'))
+                {
+                    // 変数: 定義済みで、数値が入っているときだけ使う
+                    if (!variableValues.TryGetValue(part.ToLowerInvariant(), out object? v) || v is string || v == null) return false;
+                    try { termValue = Convert.ToDouble(v, System.Globalization.CultureInfo.InvariantCulture); }
+                    catch { return false; }
+                }
+                else if (!double.TryParse(part, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out termValue))
+                {
+                    return false;
+                }
+                value += sign * termValue;
+            }
+            return true;
+        }
+
+        // distanceVar: 式の中の「distance」の値（直前の距離程）
+        private static void CheckDistanceValue(string expr, int lineNumber, Dictionary<string, object> variableValues, Interpreter interpreter, List<ParseError> errors, string fileName = "", double? distanceVar = null)
+        {
+            if (string.IsNullOrWhiteSpace(expr)) return;
+            // ★ 高速化: ただの数字なら Eval を使わずに判定する
+            if (TryParsePlainNumber(expr, out double plainValue))
+            {
+                if (plainValue < 0)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, 0, "距離程は 0 以上の実数である必要があります。", fileName));
+                    return;
+                }
+                // 0 以上なら、今まで通り Int32 の範囲チェックへ（CheckInt32Range も数字なら Eval を使わない）
+                CheckInt32Range(expr, lineNumber, errors, variableValues, interpreter, fileName);
+                return;
+            }
+            // ★ 高速化: 「1320 + $WK02」のような式も Eval を使わずに判定する（CheckInt32Range と同じ範囲チェックもここで行う）
+            if (TryEvaluateSimpleSum(expr, variableValues, distanceVar, out double sumValue))
+            {
+                if (sumValue < 0)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, 0, "距離程は 0 以上の実数である必要があります。", fileName));
+                    return;
+                }
+                if (sumValue > int.MaxValue || sumValue < int.MinValue)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, 1, $"Cannot convert literal {expr.Trim()} to type Int32.", fileName));
+                }
+                return;
+            }
+            try
+            {
+                ConfigureInterpreter(interpreter);
+                SetInterpreterVariables(interpreter, variableValues);
+                var evalResult = interpreter.Eval(NormalizeVariableExpression(expr));
+                if (evalResult != null && Convert.ToDouble(evalResult) < 0)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, 0, "距離程は 0 以上の実数である必要があります。", fileName));
+                    return;
+                }
+            }
+            catch
+            {
+                if (double.TryParse(expr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double dVal) && dVal < 0)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, 0, "距離程は 0 以上の実数である必要があります。", fileName));
+                    return;
+                }
+            }
+            CheckInt32Range(expr, lineNumber, errors, variableValues, interpreter, fileName);
+        }
+        private static void CheckInvalidCharacters(string code, int lineNumber, List<ParseError> errors, string fileName = "")
+        {
+            if (string.IsNullOrEmpty(code)) return;
+            var match = InvalidCharRegex.Match(code);
+            if (match.Success)
+            {
+                errors.Add(CreateError("エラー", lineNumber, match.Index, $"Invalid character: '{match.Value[0]}'.", fileName));
+            }
+        }
+        private static void CheckMissingOperator(string expr, int lineNumber, List<ParseError> errors, string fileName = "")
+        {
+            if (string.IsNullOrEmpty(expr)) return;
+            var match = MissingOperatorRegex.Match(expr);
+            if (match.Success)
+            {
+                errors.Add(CreateError("エラー", lineNumber, match.Index, "演算子不足または予期せぬ括弧の記述があります。", fileName));
+            }
+        }
+        private static void CheckFullWidthSpace(string codePart, int lineNumber, List<ParseError> errors, string fileName = "")
+        {
+            string sanitized = Regex.Replace(codePart, @"'[^']*'|""[^""]*""", m => new string(' ', m.Length));
+            for (int i = 0; i < sanitized.Length; i++)
+            {
+                char c = sanitized[i];
+                if (c == '\u3000' || (c > 127 && c != '¥' && c != '\\'))
+                {
+                    errors.Add(CreateError("エラー", lineNumber, i + 1, $"コード内に全角文字（'{c}'）が含まれています。半角文字を使用してください。", fileName));
+                }
+            }
+        }
+        private static void CheckDuplicateLoad(CommandNode cmdNode, HashSet<string> loadedCommands, List<ParseError> errors, string fileName = "")
+        {
+            if (!cmdNode.MethodName.Equals("Load", StringComparison.OrdinalIgnoreCase)) return;
+            string loadKey = cmdNode.RawStatement.TrimEnd(';');
+            if (!loadedCommands.Add(loadKey))
+            {
+                errors.Add(CreateError("エラー", cmdNode.Line, cmdNode.Column, $"同じ Load 定義（'{loadKey}'）が重複して記述されています。", fileName));
+            }
+        }
+        private static void CheckConsecutiveBrackets(string trimmedCodePart, int lineNumber, List<ParseError> errors, string fileName = "")
+        {
+            string sanitized = Regex.Replace(trimmedCodePart, @"'[^']*'|""[^""]*""", match => new string(' ', match.Length));
+            Match match = ConsecutiveBracketsRegex.Match(sanitized);
+            if (match.Success)
+            {
+                errors.Add(CreateError("エラー", lineNumber, match.Index + 1, "括弧が演算子なしで連続して記述されています。", fileName));
+            }
+        }
+        private static void CheckBrackets(string line, int lineNumber, List<ParseError> errors, string fileName = "")
+        {
+            int roundCount = 0, squareCount = 0;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (c == '(') roundCount++;
+                else if (c == ')') roundCount--;
+                else if (c == '[') squareCount++;
+                else if (c == ']') squareCount--;
+                if (roundCount < 0) { errors.Add(CreateError("エラー", lineNumber, i + 1, "対応する '(' がない閉じ括弧 ')' が存在します。", fileName)); roundCount = 0; }
+                if (squareCount < 0) { errors.Add(CreateError("エラー", lineNumber, i + 1, "対応する '[' がない閉じ括弧 ']' が存在します。", fileName)); squareCount = 0; }
+            }
+            if (roundCount > 0) errors.Add(CreateError("エラー", lineNumber, line.Length, "閉じ括弧 ')' が不足しています。", fileName));
+            if (squareCount > 0) errors.Add(CreateError("エラー", lineNumber, line.Length, "閉じ括弧 ']' が不足しています。", fileName));
+        }
+        private static void CheckElementKeyExistsAst(CommandNode cmdNode, bool isLoaded, HashSet<string> validKeys, string namespaceName, List<ParseError> errors, string fileName = "")
+        {
+            if (!cmdNode.Namespace.Equals(namespaceName, StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(cmdNode.Key)) return;
+            if (!isLoaded)
+            {
+                errors.Add(CreateError("エラー", cmdNode.Line, cmdNode.Column, $"{namespaceName} リストがまだロードされていないため、キー '{cmdNode.Key}' を検証できません。", fileName));
+            }
+            else if (!validKeys.Contains(cmdNode.Key))
+            {
+                errors.Add(CreateError("エラー", cmdNode.Line, cmdNode.Column, $"{namespaceName} キー '{cmdNode.Key}' は対応するリストファイルに存在しません。", fileName));
+            }
+        }
+        private static void CheckRepeaterKeysAst(CommandNode cmdNode, bool isStructureLoaded, HashSet<string> structureKeys, List<ParseError> errors, string fileName = "")
+        {
+            if (!cmdNode.Namespace.Equals("Repeater", StringComparison.OrdinalIgnoreCase)) return;
+            if (!cmdNode.MethodName.StartsWith("Begin", StringComparison.OrdinalIgnoreCase)) return;
+            int startIndex = cmdNode.MethodName.Equals("Begin0", StringComparison.OrdinalIgnoreCase) ? 4 : 10;
+            for (int i = startIndex; i < cmdNode.Arguments.Count; i++)
+            {
+                string arg = cmdNode.Arguments[i].Trim();
+                if ((arg.StartsWith('\'') && arg.EndsWith('\'')) || (arg.StartsWith('"') && arg.EndsWith('"')))
+                {
+                    if (arg.Length >= 2)
+                    {
+                        string structKey = arg.Substring(1, arg.Length - 2);
+                        if (isStructureLoaded && !structureKeys.Contains(structKey))
+                        {
+                            errors.Add(CreateError("エラー", cmdNode.Line, cmdNode.Column, $"Repeater のストラクチャキー '{structKey}' は対応するストラクチャリストに存在しません。", fileName));
+                        }
+                    }
+                }
+            }
+        }
+        private static void CheckAndLoadTrainCommandAst(CommandNode cmdNode, string baseDirectory, HashSet<string> trainKeys, List<ParseError> errors, int lineNumber, string fileName = "")
+        {
+            string trainKey = string.Empty, filePath = string.Empty;
+            if (cmdNode.Namespace.Equals("Train", StringComparison.OrdinalIgnoreCase))
+            {
+                if (cmdNode.MethodName.Equals("Add", StringComparison.OrdinalIgnoreCase) && cmdNode.Arguments.Count >= 2)
+                {
+                    trainKey = cmdNode.Arguments[0].Trim('\'', '"');
+                    filePath = cmdNode.Arguments[1].Trim('\'', '"');
+                }
+                else if (cmdNode.MethodName.Equals("Load", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(cmdNode.Key) && cmdNode.Arguments.Count >= 1)
+                {
+                    trainKey = cmdNode.Key;
+                    filePath = cmdNode.Arguments[0].Trim('\'', '"');
+                }
+            }
+            if (string.IsNullOrEmpty(trainKey) || string.IsNullOrEmpty(filePath)) return;
+            trainKeys.Add(trainKey);
+            string fullPath = string.IsNullOrEmpty(baseDirectory) ? filePath : Path.Combine(baseDirectory, filePath);
+            if (!File.Exists(fullPath))
+            {
+                errors.Add(CreateError("警告", lineNumber, 1, $"他列車ファイルが見つかりません: {Path.GetFileName(fullPath)}", fileName));
+                return;
+            }
+            try
+            {
+                var lines = File.ReadAllLines(fullPath);
+                if (lines.Length > 0)
+                {
+                    bool isValidTrainHeader = lines[0].StartsWith("BveTs Train 1.00", StringComparison.OrdinalIgnoreCase) ||
+                                              lines[0].StartsWith("BveTs Train 1.01", StringComparison.OrdinalIgnoreCase);
+                    if (!isValidTrainHeader)
+                    {
+                        errors.Add(CreateError("エラー", lineNumber, 1, "他列車ファイルのヘッダーが無効です（'BveTs Train 1.00' または 'BveTs Train 1.01' で始まる必要があります）。", fileName));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add(CreateError("エラー", lineNumber, 1, $"他列車ファイルの読み込みに失敗しました: {ex.Message}", fileName));
+            }
+        }
+        private static void CheckTrainKeyExistsAst(CommandNode cmdNode, HashSet<string> trainKeys, List<ParseError> errors, string fileName = "")
+        {
+            if (!cmdNode.Namespace.Equals("Train", StringComparison.OrdinalIgnoreCase) ||
+                cmdNode.MethodName.Equals("Add", StringComparison.OrdinalIgnoreCase) ||
+                cmdNode.MethodName.Equals("Load", StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrEmpty(cmdNode.Key)) return;
+            if (!trainKeys.Contains(cmdNode.Key))
+            {
+                errors.Add(CreateError("エラー", cmdNode.Line, cmdNode.Column, $"トレインキー '{cmdNode.Key}' がロードされていないか、存在しません。", fileName));
+            }
+        }
+        #region Variable Assignment Handling
+        private static void TryHandleVariableAssignmentAst(VariableAssignmentNode varNode, List<ParseError> errors, List<(string Name, int Line)> definedVariables, Dictionary<string, object> variableValues, Interpreter interpreter, string fileName = "")
+        {
+            string leftPart = varNode.VariableName;
+            string rightPart = varNode.Expression;
+            int lineNumber = varNode.Line;
+            bool isDistance = leftPart.Equals("distance", StringComparison.OrdinalIgnoreCase);
+            if (!leftPart.StartsWith("$") && !isDistance)
+            {
+                errors.Add(CreateError("エラー", lineNumber, varNode.Column, "右辺と左辺を逆に書くことはできません。", fileName));
+                return;
+            }
+            string leftLower = leftPart.ToLowerInvariant();
+            bool isQuoted = (rightPart.StartsWith('\'') && rightPart.EndsWith('\'')) || (rightPart.StartsWith('"') && rightPart.EndsWith('"'));
+            if (isQuoted)
+            {
+                if (isDistance)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, varNode.Column, "distance変数には数値を代入してください。", fileName));
+                    return;
+                }
+                string strValue = rightPart.Substring(1, rightPart.Length - 2);
+                definedVariables.Add((leftPart, lineNumber));
+                variableValues[leftLower] = strValue;
+                return;
+            }
+            // ★ 高速化: 右辺が「数字や変数の足し算・引き算だけ」なら Eval を使わずに計算する（下の Eval 成功時と同じ記録をする）
+            if (TryEvaluateSimpleSum(rightPart, variableValues, out double fastValue))
+            {
+                if (!isDistance) definedVariables.Add((leftPart, lineNumber));
+                variableValues[leftLower] = fastValue;
+                return;
+            }
+            try
+            {
+                ConfigureInterpreter(interpreter);
+                SetInterpreterVariables(interpreter, variableValues);
+                var evalResult = interpreter.Eval(NormalizeVariableExpression(rightPart));
+                if (evalResult is string strRes)
+                {
+                    definedVariables.Add((leftPart, lineNumber));
+                    variableValues[leftLower] = strRes;
+                    return;
+                }
+                double numResult = Convert.ToDouble(evalResult);
+                if (!isDistance) definedVariables.Add((leftPart, lineNumber));
+                variableValues[leftLower] = numResult;
+            }
+            catch (Exception ex)
+            {
+                string msg = ex.Message;
+                var matchId = Regex.Match(msg, @"Unknown identifier '([^']+)'");
+                if (matchId.Success)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, varNode.Column, $"その名前 '{matchId.Groups[1].Value}' は存在しません。", fileName));
+                }
+                else if (msg.Contains("Character literal must contain exactly one character") ||
+                         msg.Contains("Binary operator") || msg.Contains("Cannot convert") || msg.Contains("Operator") ||
+                         ex is InvalidCastException || ex is FormatException || ex is OverflowException)
+                {
+                    errors.Add(CreateError("エラー", lineNumber, varNode.Column, "算術計算でオーバーフローまたはアンダーフローが発生しました。", fileName));
+                }
+                else
+                {
+                    var matchVar = VarRefRegex.Match(rightPart);
+                    if (matchVar.Success && !variableValues.ContainsKey(matchVar.Value.ToLowerInvariant()))
+                    {
+                        errors.Add(CreateError("エラー", lineNumber, varNode.Column, $"その名前 '{matchVar.Value}' は存在しません。", fileName));
+                        return;
+                    }
+                    errors.Add(CreateError("エラー", lineNumber, varNode.Column, $"数式の計算に失敗しました: {msg}", fileName));
+                }
+            }
+        }
+        #endregion
+        private static void LoadKeysFromCsv(string filePath, string expectedHeaderPrefix, HashSet<string> keySet, List<ParseError> errors, int lineNumber, string fileName = "")
+        {
+            if (!File.Exists(filePath))
+            {
+                errors.Add(CreateError("エラー", lineNumber, 1, $"リストファイルが見つかりません: {Path.GetFileName(filePath)}", fileName));
+                return;
+            }
+            try
+            {
+                var lines = File.ReadAllLines(filePath);
+                if (lines.Length == 0) return;
+                if (!lines[0].StartsWith(expectedHeaderPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    errors.Add(CreateError("エラー", lineNumber, 1, $"リストファイルのヘッダーが無効です（'{expectedHeaderPrefix}' で始まる必要があります）。", fileName));
+                    return;
+                }
+                for (int i = 1; i < lines.Length; i++)
+                {
+                    string line = lines[i].Trim();
+                    if (string.IsNullOrEmpty(line) || line.StartsWith("//") || line.StartsWith('#')) continue;
+                    var parts = line.Split(',');
+                    if (parts.Length > 0)
+                    {
+                        string key = parts[0].Trim().Trim('\'', '"');
+                        if (!string.IsNullOrEmpty(key)) keySet.Add(key);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add(CreateError("エラー", lineNumber, 1, $"リストファイルの読み込みに失敗しました: {ex.Message}", fileName));
+            }
+        }
+        // ★ 高速化: CheckNamespaceDot で使う正規表現を、名前空間ごとに最初に1回だけ作る
+        private static readonly (string Ns, Regex NoDot, Regex WithDot, Regex AtEnd)[] NamespaceDotRules =
+            KnownNamespaces.Select(ns => (ns,
+                new Regex($@"\b{ns}[A-Za-z]+\s*\(", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                new Regex($@"\b{ns}\.[A-Za-z]+\s*\(", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                new Regex($@"\b{ns}\s*$.*?$", RegexOptions.IgnoreCase | RegexOptions.Compiled))).ToArray();
+
+        private static void CheckNamespaceDot(string code, int line, List<ParseError> errors, string fileName = "")
+        {
+            foreach (var (ns, noDot, withDot, atEnd) in NamespaceDotRules)
+            {
+                // ★ 高速化: 名前空間の名前が含まれていない行は、正規表現を使わずに飛ばす
+                if (!code.Contains(ns, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!noDot.IsMatch(code)) continue;
+                if (!withDot.IsMatch(code) &&
+                    !atEnd.IsMatch(code))
+                {
+                    int index = code.IndexOf(ns, StringComparison.OrdinalIgnoreCase);
+                    errors.Add(CreateError("エラー", line, index, $"'{ns}' の後にドット '.' が抜けているか、コマンドの記述形式が不正です（例: '{ns}.Load' のように記述してください）。", fileName));
+                }
+            }
+        }
+        // ★ 高速化: CheckKeyRequiredBrackets / CheckInvalidParentheses で使う正規表現を、名前空間ごとに最初に1回だけ作る
+        private static readonly (string Ns, Regex Dot, Regex Bracket, Regex LoadSet, Regex Paren)[] KeyRequiredRules =
+            KeyRequiredNamespaces.Select(ns => (ns,
+                new Regex($@"\b{ns}\.[A-Za-z0-9]+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                new Regex($@"\b{ns}\s*\[", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                new Regex($@"\b{ns}\.(Load|Set)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                new Regex($@"\b{ns}\s*$(.*?)$", RegexOptions.IgnoreCase | RegexOptions.Compiled))).ToArray();
+        private static readonly Regex SignalSpeedLimitRegex = new Regex(@"\bSignal\.SpeedLimit\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex TrainAddRegex = new Regex(@"\bTrain\.Add\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static void CheckKeyRequiredBrackets(string code, int line, List<ParseError> errors, string fileName = "")
+        {
+            foreach (var (ns, dot, bracket, loadSet, _) in KeyRequiredRules)
+            {
+                // ★ 高速化: 名前空間の名前が含まれていない行は、正規表現を使わずに飛ばす
+                if (!code.Contains(ns, StringComparison.OrdinalIgnoreCase)) continue;
+                bool isTarget = dot.IsMatch(code) || bracket.IsMatch(code);
+                if (!isTarget) continue;
+                if (loadSet.IsMatch(code) ||
+                    SignalSpeedLimitRegex.IsMatch(code) ||
+                    TrainAddRegex.IsMatch(code))
+                {
+                    continue;
+                }
+                if (!bracket.IsMatch(code))
+                {
+                    int index = code.IndexOf(ns, StringComparison.OrdinalIgnoreCase);
+                    errors.Add(CreateError("エラー", line, index, $"'{ns}' の指定に角括弧 '[]'（キーまたはインデックス）が不足している可能性があります。", fileName));
+                }
+            }
+        }
+        private static void CheckBracketContent(string code, int line, List<ParseError> errors, string fileName = "")
+        {
+            var matches = Regex.Matches(code, $@"\b(Sound|Structure|Signal|Track|Station|Repeater|Sound3D|Train)\s*$(.*?)$", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            foreach (Match match in matches)
+            {
+                string innerContent = match.Groups[2].Value.Trim();
+                int index = match.Index;
+                if (string.IsNullOrEmpty(innerContent) || innerContent == "''" || innerContent == "\"\"")
+                {
+                    errors.Add(CreateError("エラー", line, index, "角括弧 '[]' の中にキー（またはインデックス）が指定されていません。", fileName));
+                    continue;
+                }
+                bool startsWithQuote = innerContent.StartsWith('\'') || innerContent.StartsWith('"');
+                bool endsWithQuote = innerContent.EndsWith('\'') || innerContent.EndsWith('"');
+                if (!int.TryParse(innerContent, out _))
+                {
+                    if (startsWithQuote != endsWithQuote)
+                    {
+                        errors.Add(CreateError("エラー", line, index, "角括弧 '[]' 内の文字列を囲むアポストロフィ（' または \") が片方しかありません。", fileName));
+                    }
+                    else if (!startsWithQuote && !endsWithQuote)
+                    {
+                        errors.Add(CreateError("エラー", line, index, "角括弧 '[]' 内のキーはアポストロフィ等で囲むか、有効な数値を指定してください。", fileName));
+                    }
+                }
+            }
+        }
+        private static void CheckLoadCommandFile(string code, int line, string baseDirectory, int lineNumber, List<ParseError> errors, string fileName = "")
+        {
+            if (!LoadCommandRegex.IsMatch(code)) return;
+            int openParen = code.IndexOf('(');
+            int closeParen = code.LastIndexOf(')');
+            if (openParen < 0 || closeParen <= openParen) return;
+            string innerContent = code.Substring(openParen + 1, closeParen - openParen - 1).Trim();
+            if (string.IsNullOrEmpty(innerContent) || innerContent == "''" || innerContent == "\"\"")
+            {
+                errors.Add(CreateError("エラー", line, openParen, "Load系コマンドの引数（丸括弧内）にファイルパスが指定されていません。", fileName));
+                return;
+            }
+            bool startsWithQuote = innerContent.StartsWith('\'') || innerContent.StartsWith('"');
+            bool endsWithQuote = innerContent.EndsWith('\'') || innerContent.EndsWith('"');
+            if (startsWithQuote != endsWithQuote)
+            {
+                errors.Add(CreateError("エラー", line, openParen, "Load系コマンドの引数を囲むアポストロフィ（' または \") が片方しかありません。", fileName));
+                return;
+            }
+            if (!startsWithQuote && !endsWithQuote)
+            {
+                errors.Add(CreateError("エラー", line, openParen, "Load系コマンドの引数（ファイルパス等）はアポストロフィ（' または \") で囲む必要があります。", fileName));
+                return;
+            }
+            if (!string.IsNullOrEmpty(baseDirectory))
+            {
+                string filePath = innerContent.Trim('\'', '"');
+                if (string.IsNullOrWhiteSpace(filePath))
+                {
+                    errors.Add(CreateError("エラー", line, openParen, "ファイルパスが空です。", fileName));
+                    return;
+                }
+                try
+                {
+                    string fullPath = Path.GetFullPath(Path.Combine(baseDirectory, filePath));
+                    if (!File.Exists(fullPath))
+                    {
+                        errors.Add(CreateError("エラー", line, openParen, $"指定されたファイルが見つかりません: '{filePath}'", fileName));
+                    }
+                }
+                catch
+                {
+                    errors.Add(CreateError("エラー", line, openParen, $"ファイルパスの形式が不正です: '{filePath}'", fileName));
+                }
+            }
+        }
+        #region CheckRequiredArguments
+        // ★ 高速化: 「引数が必要なコマンド」の一覧と、探すための正規表現を最初に1回だけ作る
+        //    （以前は CheckRequiredArguments が呼ばれるたびに一覧と正規表現を作り直していた）
+        private static readonly (string Key, Regex Pattern, string Message)[] RequiredArgCommandRules = BuildRequiredArgCommandRules();
+
+        private static (string Key, Regex Pattern, string Message)[] BuildRequiredArgCommandRules()
+        {
+            var requiredArgCommands = new Dictionary<string, string>
+            {
+                { "Background.Change", "Background.Change の引数に背景キーが指定されていません。" },
+                { "Curve.Gauge",       "Curve.Gauge の引数にゲージ幅（数値）が指定されていません。" },
+                { "Begin0",            "Begin0 の引数にパラメータが指定されていません。" },
+                { "Begin",             "Begin の引数にパラメータが指定されていません。" },
+                { "Put",               "Put の引数にパラメータが指定されていません。" },
+                { "Put0",              "Put0 の引数にパラメータが指定されていません。" },
+                { "PutBetween",        "PutBetween の引数にパラメータが指定されていません。" },
+                { "SetGauge",          "SetGauge の引数にパラメータが指定されていません。" },
+                { "Gauge",             "Gauge の引数にパラメータが指定されていません。" },
+                { "SetFunction",       "SetFunction の引数にパラメータが指定されていません。" },
+                { "Curve.Change",      "Curve.Change の引数にパラメータが指定されていません。" },
+                { "Adhesion.Change",   "Adhesion.Change の引数にパラメータが指定されていません。" },
+                { "Fog.Interpolate",   "Fog.Interpolate の引数にパラメータが指定されていません。" },
+                { "Light.Ambient",     "Light.Ambient の引数にパラメータが指定されていません。" },
+                { "Light.Diffuse",     "Light.Diffuse の引数にパラメータが指定されていません。" },
+                { "Light.Direction",   "Light.Direction の引数にパラメータが指定されていません。" },
+                { "Stop",              "Stop の引数にパラメータが指定されていません。" },
+                { "Pass",              "Pass の引数にパラメータが指定されていません。" },
+                { "Enable",            "Enable の引数にパラメータが指定されていません。" },
+                { "Center",            "Center の引数にパラメータが指定されていません。" },
+            };
+            return requiredArgCommands
+                .Select(pair => (pair.Key, new Regex($@"\b{Regex.Escape(pair.Key)}\b", RegexOptions.IgnoreCase | RegexOptions.Compiled), pair.Value))
+                .ToArray();
+        }
+
+        private static void CheckRequiredArguments(string code, int line, List<ParseError> errors, string fileName = "")
+        {
+            foreach (var rule in RequiredArgCommandRules)
+            {
+                // ★ 高速化: その単語が含まれていない行は、正規表現を使わずに飛ばす
+                if (!code.Contains(rule.Key, StringComparison.OrdinalIgnoreCase)) continue;
+                if (rule.Pattern.IsMatch(code))
+                {
+                    ValidateCommandHasArguments(code, line, rule.Message, "警告", errors, fileName);
+                }
+            }
+        }
+        #endregion
+        private static void CheckInvalidParentheses(string code, int line, List<ParseError> errors, string fileName = "")
+        {
+            foreach (var (ns, _, _, loadSet, paren) in KeyRequiredRules)
+            {
+                // ★ 高速化: 名前空間の名前が含まれていない行は、正規表現を使わずに飛ばす
+                if (!code.Contains(ns, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!paren.IsMatch(code)) continue;
+                if (!loadSet.IsMatch(code))
+                {
+                    int index = code.IndexOf(ns, StringComparison.OrdinalIgnoreCase);
+                    errors.Add(CreateError("エラー", line, index, $"'{ns}' の指定には丸括弧 '()' ではなく、角括弧 '[]' を使用してください。", fileName));
+                }
+            }
+        }
+        private static void CheckNoArgMethodsAst(CommandNode cmdNode, List<ParseError> errors, string fileName = "")
+        {
+            if (string.IsNullOrEmpty(cmdNode.MethodName)) return;
+            string upperMethod = cmdNode.MethodName.ToUpperInvariant();
+            string upperNs = cmdNode.Namespace?.ToUpperInvariant() ?? "";
+            bool isNoArgMethod =
+                upperMethod.Equals("BEGINTRANSITION", StringComparison.OrdinalIgnoreCase) ||
+                upperMethod.Equals("END", StringComparison.OrdinalIgnoreCase) ||
+                upperMethod.EndsWith(".BEGINTRANSITION", StringComparison.OrdinalIgnoreCase) ||
+                upperMethod.EndsWith(".END", StringComparison.OrdinalIgnoreCase) ||
+                (upperMethod.Equals("PLAY", StringComparison.OrdinalIgnoreCase) && upperNs.Equals("SOUND", StringComparison.OrdinalIgnoreCase));
+            if (!isNoArgMethod) return;
+            bool hasArguments = cmdNode.Arguments != null && cmdNode.Arguments.Any(arg =>
+                !string.IsNullOrWhiteSpace(arg) && arg != "''" && arg != "\"\"");
+            if (hasArguments)
+            {
+                errors.Add(CreateError("エラー", cmdNode.Line, cmdNode.Column, $".{cmdNode.MethodName}() の引数には何も指定できません。", fileName));
+            }
+        }
+        private static bool CheckIncludeSyntax(string code, string baseDirectory, int line, List<ParseError> errors, Interpreter bveInterpreter, Dictionary<string, object> variableValues, List<(string Name, int Line)> definedVariables, ref double currentDistance,
+            string rootFilePath = "", Dictionary<string, string>? unsavedTexts = null, Dictionary<string, string>? parentMap = null)
+        {
+            return CheckIncludeSyntaxInternal(code, baseDirectory, line, errors, new HashSet<string>(StringComparer.OrdinalIgnoreCase), bveInterpreter, variableValues, definedVariables, ref currentDistance, "", rootFilePath, unsavedTexts, parentMap);
+        }
+        #region Include Syntax Check
+        // fileName: この include 行が書かれているファイル（空ならルートファイル）
+        // rootFilePath: ルートファイルのパス（親子対応表で「親」として使う）
+        // unsavedTexts: 開いているタブの未保存の内容（あれば保存済みのファイルより優先する）
+        // parentMap: 親子対応表（インクルード先 → 親）を書き込む先
+        private static bool CheckIncludeSyntaxInternal(string code, string baseDirectory, int line, List<ParseError> errors, HashSet<string> visitedFiles, Interpreter bveInterpreter, Dictionary<string, object> variableValues, List<(string Name, int Line)> definedVariables, ref double currentDistance, string fileName = "",
+            string rootFilePath = "", Dictionary<string, string>? unsavedTexts = null, Dictionary<string, string>? parentMap = null)
+        {
+            if (!IncludeRegex.IsMatch(code)) return false;
+            if (IncludeAssignRegex.IsMatch(code))
+            {
+                int index = code.IndexOf("include", StringComparison.OrdinalIgnoreCase);
+                    errors.Add(CreateError("エラー", line, index, "'include' の後に不要な '=' が含まれています。", fileName));
+                return true;
+            }
+            var match = IncludePathRegex.Match(code);
+            if (!match.Success)
+            {
+                int index = code.IndexOf("include", StringComparison.OrdinalIgnoreCase);
+                errors.Add(CreateError("エラー", line, index, "'include' の引数はアポストロフィ等で囲む必要があります。", fileName));
+                return true;
+            }
+            string filePath = match.Groups[2].Value.Trim();
+            int matchIndex = match.Index;
+            if (string.IsNullOrEmpty(filePath))
+            {
+                errors.Add(CreateError("エラー", line, matchIndex, "'include' の引数にファイルパスが指定されていません。", fileName));
+                return true;
+            }
+            if (!filePath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+            {
+                errors.Add(CreateError("警告", line, matchIndex, "'include' で指定できるファイルは拡張子が '.txt' のファイルのみです。", fileName));
+                return true;
+            }
+            if (string.IsNullOrEmpty(baseDirectory)) return true;
+            try
+            {
+                string fullPath = Path.GetFullPath(Path.Combine(baseDirectory, filePath));
+
+                // ★ 親子対応表に「インクルード先 → 親」を記録する（エディタがインクルード先のタブからルートをたどるのに使う）
+                string parentPath = string.IsNullOrEmpty(fileName) ? rootFilePath : fileName;
+                if (parentMap != null && !string.IsNullOrEmpty(parentPath))
+                {
+                    parentMap[fullPath] = parentPath;
+                }
+
+                if (!visitedFiles.Add(fullPath))
+                {
+                    errors.Add(CreateError("エラー", line, matchIndex, $"循環インクルード（無限ループ）が検出されました: '{filePath}'", fileName));
+                    return true;
+                }
+
+                // ★ タブで開いていて未保存の内容があれば、保存済みのファイルより優先して使う
+                string includeFileContent;
+                if (unsavedTexts != null && unsavedTexts.TryGetValue(fullPath, out string? unsavedContent))
+                {
+                    includeFileContent = unsavedContent;
+                }
+                else if (!File.Exists(fullPath))
+                {
+                    errors.Add(CreateError("エラー", line, matchIndex, $"インクルード先のファイルが見つかりません: '{filePath}'", fileName));
+                    return true;
+                }
+                else
+                {
+                    includeFileContent = ReadAllTextWithEncodingFallback(fullPath);
+                }
+                // ★ 字句解析・構文解析のエラーはいったん別のリストに集め、インクルード先のファイル名を付けてから追加する
+                //    （BveLexer / BveParser はファイル名を付けないため、そのままだと親ファイルのエラーとして表示されていた）
+                var incParseErrors = new List<ParseError>();
+                var incTokens = BveLexer.Tokenize(includeFileContent, incParseErrors);
+                var incAstNodes = BveParser.ParseTokens(incTokens, incParseErrors);
+                foreach (var incErr in incParseErrors)
+                {
+                    if (string.IsNullOrEmpty(incErr.FileName)) incErr.FileName = fullPath;
+                    errors.Add(incErr);
+                }
+                HashSet<string> validCommands = GetValidCommandsSafe();
+                string incBaseDir = Path.GetDirectoryName(fullPath) ?? baseDirectory;
+                foreach (var node in incAstNodes)
+                {
+                    if (node is DistanceNode incDistNode)
+                    {
+                        bveInterpreter.SetVariable("distance", currentDistance);
+                        double prevDistance = currentDistance; // ★ 式の中の distance は「直前の距離程」
+                        currentDistance = EvaluateDistance(incDistNode.Expression, variableValues, bveInterpreter, prevDistance);
+                        CheckDistanceComma(incDistNode.Expression, incDistNode.Line, errors, fullPath);
+                        CheckInvalidCharacters(incDistNode.Expression, incDistNode.Line, errors, fullPath);
+                        CheckMissingOperator(incDistNode.Expression, incDistNode.Line, errors, fullPath);
+                        CheckDistanceValue(incDistNode.Expression, incDistNode.Line, variableValues, bveInterpreter, errors, fullPath, prevDistance);
+                        CheckBrackets(incDistNode.Expression, incDistNode.Line, errors, fullPath);
+                        CheckConsecutiveBrackets(incDistNode.Expression, incDistNode.Line, errors, fullPath);
+                        CheckFullWidthSpace(incDistNode.Expression, incDistNode.Line, errors, fullPath);
+                        continue;
+                    }
+                    if (node is VariableAssignmentNode incVarNode)
+                    {
+                        TryHandleVariableAssignmentAst(incVarNode, errors, definedVariables, variableValues, bveInterpreter, fullPath);
+                        continue;
+                    }
+                    if (node is CommandNode cmdNode)
+                    {
+                        string incCode = cmdNode.RawStatement;
+                        int incLine = cmdNode.Line;
+                        CheckInvalidCharacters(incCode, incLine, errors, fullPath);
+                        CheckMissingOperator(incCode, incLine, errors, fullPath);
+                        CheckBrackets(incCode, incLine, errors, fullPath);
+                        CheckConsecutiveBrackets(incCode, incLine, errors, fullPath);
+                        CheckFullWidthSpace(incCode, incLine, errors, fullPath);
+                        CheckNamespaceDot(incCode, incLine, errors, fullPath);
+                        CheckKeyRequiredBrackets(incCode, incLine, errors, fullPath);
+                        CheckBracketContent(incCode, incLine, errors, fullPath);
+                        CheckLoadCommandFile(incCode, incLine, incBaseDir, incLine, errors, fullPath);
+                        CheckRequiredArguments(incCode, incLine, errors, fullPath);
+                        CheckInvalidParentheses(incCode, incLine, errors, fullPath);
+                        CheckNoArgMethodsAst(cmdNode, errors, fullPath);
+                        CheckCommandArguments(cmdNode, incLine, errors, variableValues, bveInterpreter, fullPath);
+                        if (CheckIncludeSyntaxInternal(incCode, incBaseDir, incLine, errors, visitedFiles, bveInterpreter, variableValues, definedVariables, ref currentDistance, fullPath, rootFilePath, unsavedTexts, parentMap)) continue;
+                        if (CheckBveExSyntax(incCode, incLine, errors, fullPath)) continue;
+                        CheckUnknownCommand(incCode, validCommands, incLine, errors, fullPath);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add(CreateError("エラー", line, matchIndex, $"インクルードファイルの読み込みに失敗しました: {ex.Message}", fileName));
+            }
+            return true;
+        }
+        #endregion
+        private static string ReadAllTextWithEncodingFallback(string filePath)
+        {
+            byte[] bytes = File.ReadAllBytes(filePath);
+            string text;
+            try
+            {
+                text = new UTF8Encoding(false, true).GetString(bytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+                text = Encoding.GetEncoding(932).GetString(bytes);
+            }
+            // ★ 先頭に残った BOM（見えない文字 U+FEFF）を取り除く
+            //    （残っていると、BOM付きのインクルード先の1行目が誤ってエラーになる）
+            if (text.Length > 0 && text[0] == '﻿')
+            {
+                text = text.Substring(1);
+            }
+            return text;
+        }
+        private static bool CheckBveExSyntax(string code, int line, List<ParseError> errors, string fileName = "")
+        {
+            if (!BveExRegex.IsMatch(code)) return false;
+            int index = code.IndexOf("BveEx", StringComparison.OrdinalIgnoreCase);
+            errors.Add(CreateError("注意", line, index, "BveEx（拡張構文）が使用されています。実行環境をご確認ください。", fileName));
+            return true;
+        }
+        #region Unknown Command Check
+        // ★ 高速化: CheckUnknownCommand で使う正規表現を最初に1回だけ作る（パターンは以前と同じ）
+        private static readonly Regex UnknownCmdNumericRegex = new Regex(@"^[\d\.\+\-\*\/\s\(\)]+;", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex UnknownCmdDistanceRegex = new Regex(@"\bdistance\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex UnknownCmdBracketRegex = new Regex(@"\[[^\]]*\]", RegexOptions.Compiled);
+        private static readonly Regex UnknownCmdDotSpaceRegex = new Regex(@"\s*\.\s*", RegexOptions.Compiled);
+        private static readonly Regex UnknownCmdNameRegex = new Regex(@"^([A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)", RegexOptions.Compiled);
+
+        private static void CheckUnknownCommand(string code, HashSet<string> validCommands, int line, List<ParseError> errors, string fileName = "")
+        {
+            string codeToCheck = code.Trim();
+            if (string.IsNullOrEmpty(codeToCheck)) return;
+            if (codeToCheck.StartsWith("BveTs Map", StringComparison.OrdinalIgnoreCase)) return;
+            if (UnknownCmdNumericRegex.IsMatch(codeToCheck)) return;
+            if (UnknownCmdDistanceRegex.IsMatch(codeToCheck)) return;
+            if (codeToCheck.Contains('$') || codeToCheck.Contains('=')) return;
+            string normalizedCode = UnknownCmdBracketRegex.Replace(codeToCheck, string.Empty);
+            normalizedCode = UnknownCmdDotSpaceRegex.Replace(normalizedCode, ".");
+            if (normalizedCode.EndsWith(";")) normalizedCode = normalizedCode.Substring(0, normalizedCode.Length - 1).Trim();
+            var matchCmd = UnknownCmdNameRegex.Match(normalizedCode);
+            if (!matchCmd.Success) return;
+            string commandName = matchCmd.Groups[1].Value;
+            if (!commandName.Contains('.'))
+            {
+                int index = code.IndexOf(commandName, StringComparison.OrdinalIgnoreCase);
+                errors.Add(CreateError("エラー", line, index < 0 ? 0 : index, $"未知のコマンドまたは存在しない単語です: '{commandName}'", fileName));
+                return;
+            }
+            bool isValid = validCommands != null && validCommands.Count > 0 && validCommands.Contains(commandName);
+            if (validCommands != null && validCommands.Count > 0 && !isValid)
+            {
+                int index = code.IndexOf(commandName, StringComparison.OrdinalIgnoreCase);
+                errors.Add(CreateError("エラー", line, index < 0 ? 0 : index, $"未知のコマンドまたは存在しない単語です: '{commandName}'", fileName));
+            }
+        }
+        #endregion
+        private static bool ContainsVariableReference(string code) => VarRefRegex.IsMatch(code);
+        private static ParseError CreateError(string level, int line, int index, string message, string fileName = "") => new ParseError
+        {
+            Level = level,
+            Line = line,
+            Column = index >= 0 ? index + 1 : 1,
+            Message = string.IsNullOrEmpty(fileName) ? message : $"[{Path.GetFileName(fileName)}] {message}",
+            FileName = fileName
+        };
+        private static void ValidateCommandHasArguments(string code, int line, string errorMessage, string level, List<ParseError> errors, string fileName = "")
+        {
+            int openParen = code.IndexOf('(');
+            int closeParen = code.LastIndexOf(')');
+            if (openParen < 0 || closeParen <= openParen) return;
+            string innerContent = code.Substring(openParen + 1, closeParen - openParen - 1).Trim();
+            if (string.IsNullOrEmpty(innerContent) || innerContent == "''" || innerContent == "\"\"")
+            {
+                errors.Add(CreateError(level, line, openParen, errorMessage, fileName));
+            }
+        }
+        private static HashSet<string> GetValidCommandsSafe()
+        {
+            try { return BveSyntaxProvider.GetValidCommands(); }
+            catch { return new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
+        }
+        private static void CheckCommandArguments(CommandNode cmdNode, int lineNumber, List<ParseError> errors, Dictionary<string, object> variableValues, Interpreter bveInterpreter, string fileName = "")
+        {
+            string commandName = string.IsNullOrEmpty(cmdNode.MethodName) ? cmdNode.Namespace : $"{cmdNode.Namespace}.{cmdNode.MethodName}";
+            List<string> args = cmdNode.Arguments;
+            CommandRule? rule = null;
+            if (CommandRules.TryGetValue(commandName, out var exactRule)) rule = exactRule;
+            else if (commandName.EndsWith(".Begin", StringComparison.OrdinalIgnoreCase) && commandName.StartsWith("Repeater", StringComparison.OrdinalIgnoreCase))
+            {
+                CommandRules.TryGetValue("Repeater.Begin", out rule);
+            }
+            if (rule == null) return;
+            if (rule.AllowZeroArgs && args.Count == 0) return;
+            bool isFixedCount = (rule.MinArgs == rule.MaxArgs);
+            bool isInvalidCount = isFixedCount ? (args.Count != rule.MinArgs) : (args.Count < rule.MinArgs || args.Count > rule.MaxArgs);
+            if (isInvalidCount)
+            {
+                string maxStr = (rule.MaxArgs == int.MaxValue) ? "無制限" : rule.MaxArgs.ToString();
+                string message = isFixedCount
+                    ? $"{commandName} の引数は {rule.MinArgs} 個である必要があります（現在: {args.Count}個）。本体側：指定されたパラメーターの数が期待された数と一致しませんでした。"
+                    : $"{commandName} の引数の数は {rule.MinArgs}〜{maxStr} 個である必要があります（現在: {args.Count}個）。本体側：指定されたパラメーターの数が期待された数と一致しませんでした。";
+                errors.Add(CreateError("エラー", lineNumber, 1, message, fileName));
+                return;
+            }
+            if (rule.AllArgsNumeric)
+            {
+                for (int idx = 0; idx < args.Count; idx++) ValidateArgNumeric(args[idx], idx, commandName, lineNumber, errors, variableValues, bveInterpreter, fileName);
+            }
+            else
+            {
+                foreach (int idx in rule.NumericArgIndices)
+                {
+                    if (idx < args.Count) ValidateArgNumeric(args[idx], idx, commandName, lineNumber, errors, variableValues, bveInterpreter, fileName);
+                }
+                // ★ 数値ではない引数（軌道名・ストラクチャーキーなどの文字列）に、' ' で囲まれていない名前だけが書かれていたらエラーにする
+                //    （例: Structure['abc'].Put(xyz, 0, ...)。以前はエラーにならなかった）
+                //    null は書いてよい名前なので除く
+                //    （distance は距離程の行（distance + 100; など）でだけ今の距離程になり、引数ではただの文字として扱われるため、ほかの名前と同じくエラーにする）
+                for (int idx = 0; idx < args.Count; idx++)
+                {
+                    if (Array.IndexOf(rule.NumericArgIndices, idx) >= 0) continue;
+                    string a = args[idx].Trim();
+                    if (BareWordArgRegex.IsMatch(a) &&
+                        !a.Equals("null", StringComparison.OrdinalIgnoreCase))
+                    {
+                        errors.Add(CreateError("エラー", lineNumber, 1, $"{commandName} の第 {idx + 1} 引数は文字列のため ' ' で囲む必要があります（値: '{a}'）。", fileName));
+                    }
+                }
+            }
+            rule.CustomValidator?.Invoke(args, lineNumber, commandName, errors, variableValues);
+        }
+        // ★ ' ' で囲まれていない名前だけの引数（例: xyz）
+        private static readonly Regex BareWordArgRegex = new Regex(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.Compiled);
+        #region Argument Validation
+        private static void ValidateArgNumeric(string arg, int idx, string commandName, int lineNumber, List<ParseError> errors, Dictionary<string, object> variableValues, Interpreter bveInterpreter, string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(arg) || string.Equals(arg, "null", StringComparison.OrdinalIgnoreCase)) return;
+            if (arg.Contains("$") || arg.Contains("+") || arg.Contains("-") || arg.Contains("*") || arg.Contains("/") ||
+                arg.Contains("Floor", StringComparison.OrdinalIgnoreCase) ||
+                arg.Contains("Ceil", StringComparison.OrdinalIgnoreCase) ||
+                arg.Contains("Rand", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            if (!IsValidNumericOrExpression(arg, variableValues))
+            {
+                var matchVar = VarRefRegex.Match(arg);
+                if (matchVar.Success && !variableValues.ContainsKey(matchVar.Value.ToLowerInvariant()))
+                {
+                    errors.Add(CreateError("エラー", lineNumber, 1, $"その名前 '{matchVar.Value}' は存在しません。", fileName));
+                    return;
+                }
+                errors.Add(CreateError("エラー", lineNumber, 1, $"{commandName} の第 {idx + 1} 引数には数値を指定してください（値: '{arg}'）。", fileName));
+            }
+            else
+            {
+                CheckInt32Range(arg, lineNumber, errors, variableValues, bveInterpreter, fileName);
+            }
+        }
+        #endregion
+        private static void ValidateTiltOption(string argVal, int lineNumber, string commandName, List<ParseError> errors)
+        {
+            if (string.IsNullOrWhiteSpace(argVal) || string.Equals(argVal, "null", StringComparison.OrdinalIgnoreCase)) return;
+            if (int.TryParse(argVal, out int tilt) && (tilt < 0 || tilt > 3))
+            {
+                errors.Add(new ParseError { Level = "エラー", Line = lineNumber, Column = 1, Message = $"{commandName} の傾斜オプションには 0〜3 の値を指定してください（現在: {tilt}）。" });
+            }
+        }
+        private static void ConfigureInterpreter(Interpreter interpreter)
+        {
+            if (interpreter == null) return;
+            try
+            {
+                interpreter.SetFunction("abs", (Func<double, double>)Math.Abs);
+                interpreter.SetFunction("atan2", (Func<double, double, double>)Math.Atan2);
+                interpreter.SetFunction("ceil", (Func<double, double>)Math.Ceiling);
+                interpreter.SetFunction("cos", (Func<double, double>)Math.Cos);
+                interpreter.SetFunction("exp", (Func<double, double>)Math.Exp);
+                interpreter.SetFunction("floor", (Func<double, double>)Math.Floor);
+                interpreter.SetFunction("log", (Func<double, double>)Math.Log);
+                interpreter.SetFunction("pow", (Func<double, double, double>)Math.Pow);
+                interpreter.SetFunction("sin", (Func<double, double>)Math.Sin);
+                interpreter.SetFunction("sqrt", (Func<double, double>)Math.Sqrt);
+                var rand = new Random();
+                interpreter.SetFunction("rand", (Func<double>)(() => rand.NextDouble()));
+                interpreter.SetFunction("rand", (Func<double, double>)(max => rand.NextDouble() * max));
+            }
+            catch { }
+        }
+        private static void SetInterpreterVariables(Interpreter interpreter, Dictionary<string, object> variableValues)
+        {
+            foreach (var kvp in variableValues)
+            {
+                interpreter.SetVariable(NormalizeVariableName(kvp.Key), kvp.Value);
+            }
+        }
+        // ★ 安全対策（V3）: 計算式の中の「.名前」（関数の呼び出しや中身の取り出し。例: "x".PadLeft(50000000)、Math.Max(1, 2)）を見つける
+        //    BVE の構文にはこの書き方はない。細工されたマップで大量のメモリを使わせられるのを防ぐため、見つけたら計算しない
+        //    （'…' や "…" で囲まれた文字の中は対象外。小数点（1.5）は「.数字」なので対象外）
+        private static readonly Regex QuotedTextRegex = new Regex(@"'[^']*'|""[^""]*""", RegexOptions.Compiled);
+        private static readonly Regex MemberAccessRegex = new Regex(@"\.\s*[A-Za-z_]", RegexOptions.Compiled);
+
+        private static string NormalizeVariableExpression(string expression)
+        {
+            if (MemberAccessRegex.IsMatch(QuotedTextRegex.Replace(expression, "''")))
+            {
+                // 呼び出し元の catch で「計算に失敗した」として扱われる
+                throw new InvalidOperationException("計算式に「.名前」の形（関数の呼び出しなど）は使えません。");
+            }
+            string normalized = Regex.Replace(expression, @"\$([A-Za-z0-9_]+)", match =>
+                NormalizeVariableName(match.Value));
+            return Regex.Replace(normalized,
+                @"\b(abs|atan2|ceil|cos|exp|floor|log|pow|sin|sqrt|rand)\s*(?=\()",
+                match => match.Value.Trim().ToLowerInvariant(),
+                RegexOptions.IgnoreCase);
+        }
+        private static string NormalizeVariableName(string variableName)
+        {
+            return variableName.StartsWith("$", StringComparison.Ordinal)
+                ? $"v_{variableName.Substring(1).ToLowerInvariant()}"
+                : variableName;
+        }
+        private static bool IsValidNumericOrExpression(string arg, Dictionary<string, object> variableValues)
+        {
+            if (string.IsNullOrWhiteSpace(arg)) return false;
+            if (IsNumeric(arg)) return true;
+            if (arg.StartsWith("$")) return variableValues.ContainsKey(arg.ToLowerInvariant());
+            if (Regex.IsMatch(arg, @"^[+-]\s*\$[A-Za-z0-{9}_{}]+$"))
+            {
+                var match = VarRefRegex.Match(arg);
+                if (match.Success)
+                    return variableValues.ContainsKey(match.Value.ToLowerInvariant());
+            }
+            try
+            {
+                var interpreter = new Interpreter();
+                ConfigureInterpreter(interpreter);
+                SetInterpreterVariables(interpreter, variableValues);
+                var result = interpreter.Eval(NormalizeVariableExpression(arg));
+                Convert.ToDouble(result);
+                return true;
+            }
+            catch { return false; }
+        }
+        private static bool IsNumeric(string value) => double.TryParse(value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out _);
+    }
+}

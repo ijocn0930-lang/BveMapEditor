@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（信号指示速度）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 信号指示速度（Section.SetSpeedLimit）</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <p><b>Section.SetSpeedLimit</b>（旧: Signal.SpeedLimit）は、信号の現示ごとの制限速度を決めるコマンドです。マップファイル全体で1回だけ書けます。2回目以降が書かれているとエラーになります。</p>
+        <p>include で読み込んだファイルにも書いていないか確認してください。</p>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>間違い</h3>
+        <div class="code ng">Section.SetSpeedLimit(0, 25, 45, 65, 95);
+…
+Section.SetSpeedLimit(0, 25, 55, 75, 110);</div>
+        <h3>正しい</h3>
+        <div class="code ok">Section.SetSpeedLimit(0, 25, 45, 65, 95);</div>
+        <p>どちらか1つを残して、ほかの行は消すか、行の先頭に # を付けてコメントにしてください。</p>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">どれを残すかを決める必要があるため、修正の候補はありません。手で直してください。</div>
+    </div>
+</body>
+</html>

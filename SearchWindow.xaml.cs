@@ -19,7 +19,8 @@ namespace BveMapEditor
     public partial class SearchWindow : Window
     {
         // ★ ここにフィールドを宣言します
-        private readonly TextEditor _editor;
+        // ★ 検索ウィンドウを使い回すとき、検索するエディタ（今のタブ）を差し替えられるように readonly を外した
+        private TextEditor _editor;
         private readonly AppSettings _settings; // ★ 設定オブジェクトを受け取る
         // ★ ウィンドウを閉じても記憶しておくための静的（static）フィールド
         internal SearchWindow(TextEditor editor, AppSettings settings)
@@ -46,6 +47,7 @@ namespace BveMapEditor
 
                 ChkMatchCase.IsChecked = _settings.LastMatchCase;
                 ChkLoopSearch.IsChecked = _settings.LastLoopSearch;
+                ChkWholeWord.IsChecked = _settings.LastWholeWord; // ★ (2026-11-15) 「単語単位」も戻す（以前は保存だけして読み込んでいなかった）
                 ChkWarnLargeReplace.IsChecked = _settings.LastWarnLargeReplace;
             }
             else
@@ -60,6 +62,40 @@ namespace BveMapEditor
             {
                 textBox.SelectAll();
             }        }
+        /// <summary>
+        /// ★ すでに開いている検索ウィンドウを使い回すときに呼ぶ: 検索するエディタを今のタブに差し替え、検索欄の文字を全選択する
+        /// </summary>
+        internal void ReuseFor(TextEditor editor)
+        {
+            SetEditor(editor);
+            CmbSearchQuery.Focus();
+            if (CmbSearchQuery.Template.FindName("PART_EditableTextBox", CmbSearchQuery) is System.Windows.Controls.TextBox textBox)
+            {
+                textBox.SelectAll();
+            }
+        }
+
+        /// <summary>
+        /// ★ 検索・置換する相手のエディタを差し替える（タブを切り替えたときにメインウィンドウから呼ぶ）。検索欄の入力などはそのまま
+        /// </summary>
+        internal void SetEditor(TextEditor editor)
+        {
+            if (editor != null) _editor = editor;
+        }
+
+        /// <summary>
+        /// ★ 閉じる直前に、持ち主のメインウィンドウを前に出す
+        ///    （出さないと、Windows が別のアプリを前に出してしまい、メインウィンドウが後ろに回ることがあった）
+        /// </summary>
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            base.OnClosing(e);
+            if (!e.Cancel)
+            {
+                try { Owner?.Activate(); } catch { }
+            }
+        }
+
         // 検索文字列・置換文字列を履歴リストに追加するヘルパーメソッド
         private void AddToHistory(ComboBox comboBox, List<string> historyList)
         {
@@ -106,11 +142,15 @@ namespace BveMapEditor
             PerformSearch();
         }
 
+        // ★ 検索欄で Enter を押したら「次を検索」と同じ動き
+        //    （以前はこの処理がどこにもつながっていなかったため、Enter を押しても検索されなかった。SearchWindow.xaml の CmbSearchQuery につないだ）
+        //    履歴の一覧を開いているときの Enter は、一覧から選ぶ操作なので検索しない
         private void CmbQuery_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.Enter)
+            if (e.Key == Key.Enter && !CmbSearchQuery.IsDropDownOpen)
             {
                 PerformSearch();
+                e.Handled = true;
             }
         }
         private bool IsWholeWordMatch(string text, int index, int length, StringComparison comparison)
@@ -259,8 +299,9 @@ namespace BveMapEditor
             string text = _editor.Document.Text;
             string replaceText = CmbReplaceQuery.Text ?? string.Empty;
             StringComparison comparison = ChkMatchCase.IsChecked == true ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-            // ★ 1. まず置換対象となるヒット数を事前にカウントする
-            int matchCount = 0;
+            // ★ 1. まず置換する位置をすべて見つける（件数もここで分かる）
+            //    (2026-11-15) 以前は1件置換するたびに本文全体を作り直して探し直していたため、大きいファイルで件数が多いととても遅かった
+            var positions = new List<int>();
             int tempIndex = 0;
             bool isWholeWord = ChkWholeWord.IsChecked == true;
             while (true)
@@ -270,10 +311,11 @@ namespace BveMapEditor
 
                 if (!isWholeWord || IsWholeWordMatch(text, tempIndex, query.Length, comparison))
                 {
-                    matchCount++;
+                    positions.Add(tempIndex);
                 }
                 tempIndex += query.Length;
             }
+            int matchCount = positions.Count;
 
             if (matchCount == 0)
             {
@@ -295,29 +337,16 @@ namespace BveMapEditor
                     return; // ユーザーが「いいえ」を選んだ場合は中止
                 }
             }
-            // 文字列を全置換（簡易実装）
+            // ★ 2. 見つけた位置を「後ろから」順に置換する（後ろから直せば、前の位置がずれない）
+            //    BeginUpdate ～ EndUpdate の間の変更は、Ctrl+Z 1回でまとめて元に戻せる（以前と同じ）
             int count = 0;
-            int index = 0;
-
             _editor.Document.BeginUpdate();
             try
             {
-                while (true)
+                for (int i = positions.Count - 1; i >= 0; i--)
                 {
-                    index = text.IndexOf(query, index, comparison);
-                    if (index == -1) break;
-
-                    if (!isWholeWord || IsWholeWordMatch(text, index, query.Length, comparison))
-                    {
-                        _editor.Document.Replace(index, query.Length, replaceText);
-                        text = _editor.Document.Text;
-                        index += replaceText.Length;
-                        count++;
-                    }
-                    else
-                    {
-                        index += query.Length;
-                    }
+                    _editor.Document.Replace(positions[i], query.Length, replaceText);
+                    count++;
                 }
             }
             finally

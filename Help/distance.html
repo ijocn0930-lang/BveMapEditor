@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（距離程）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 距離程・計算式</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <p>距離程は <b>1320;</b> や <b>1320 + $WK02;</b>、<b>distance + 25;</b>（直前の距離程 + 25）のように、数値・変数・計算式に ; を付けて書きます。</p>
+        <ul>
+            <li><b>距離程は 0 以上の実数である必要があります</b> … 計算した結果がマイナスです。</li>
+            <li><b>距離程にカンマを付けることはできません</b> … 1,320 のように , を入れています。</li>
+            <li><b>距離程の式が演算子 '+' で終わっています</b> … + の後ろが抜けています。</li>
+            <li><b>Cannot convert literal … to type Int32 / 算術計算でオーバーフロー</b> … 数値が大きすぎます。</li>
+            <li><b>distance変数には数値を代入してください / 右辺と左辺を逆に書くことはできません</b> … 変数の代入の書き方が間違っています（$変数 = 値; の形）。</li>
+            <li><b>数式の計算に失敗しました</b> … 計算式を読めませんでした。括弧や演算子を確認してください。</li>
+        </ul>
+        <p>distance は、距離程の行の中でだけ「今の距離程」になります。コマンドの引数に書くとただの文字として扱われます。</p>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>間違い</h3>
+        <div class="code ng">1,320;
+distance +;
+100 - 200;</div>
+        <h3>正しい</h3>
+        <div class="code ok">1320;
+distance + 25;
+$KM = 100;
+$KM + 200;</div>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">「距離程の式が演算子 '+' で終わっています」は、右クリック ➔「修正の候補」➔「最後の演算子 + を消す」で直せます。</div>
+    </div>
+</body>
+</html>

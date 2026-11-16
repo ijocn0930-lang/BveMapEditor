@@ -1,0 +1,424 @@
+﻿using System.Linq;
+using System.Text.RegularExpressions;
+using System.Collections.Generic;
+
+namespace BveMapParserWorker
+{
+    // ==========================================
+    // AST（抽象構文木）ノードの定義
+    // ==========================================
+    public abstract class AstNode
+    {
+        public int Line { get; set; }
+        public int Column { get; set; }
+    }
+    // 距離程ノード
+    public class DistanceNode : AstNode
+    {
+        public string Expression { get; set; } = string.Empty;
+    }
+    // 変数代入・参照ノード
+    public class VariableAssignmentNode : AstNode
+    {
+        public string VariableName { get; set; } = string.Empty;
+        public string Expression { get; set; } = string.Empty;
+    }
+    // コマンドノード
+    public class CommandNode : AstNode
+    {
+        public string RawStatement { get; set; } = string.Empty;
+        public string Namespace { get; set; } = string.Empty;
+        public string? Key { get; set; }
+        public string MethodName { get; set; } = string.Empty;
+        public List<string> Arguments { get; set; } = new();
+    }
+
+    // ==========================================
+    // パーサー（構文解析器）
+    // ==========================================
+    public static class BveParser
+    {
+        public static List<AstNode> ParseTokens(List<Token> tokens, List<ParseError> errors)
+        {
+            CheckConsecutiveSemicolons(tokens, errors);
+            var nodes = new List<AstNode>();
+            var currentStatementTokens = new List<Token>();
+
+            foreach (var token in tokens)
+            {
+                if (token.Type == TokenType.Comment) continue;
+
+                // セミコロンが省略された文は、改行位置で確定する。
+                // これにより、連続する "bsv" と "bsv;" が1つの文に連結されるのを防ぐ。
+                // BveTs Map はスルーする
+                // ★ 複数行にまたがる文に対応: 前の行の最後や、次の行の最初が「文が続く印」（+ = , ( など）なら区切らずにつなげる
+                //    （BVE 本体は改行を空白と同じに扱い、; まで1つの文として読むため）
+                //    行の比較は「文の最後の単語・記号の行」と比べる（2行以上つながった文でも正しく判定するため）
+                if (currentStatementTokens.Count > 0 &&
+                    token.Line != currentStatementTokens[currentStatementTokens.Count - 1].Line &&
+                    !IsStatementContinuation(currentStatementTokens[currentStatementTokens.Count - 1], token, currentStatementTokens))
+                {
+                    CheckMissingSemicolon(currentStatementTokens, errors); // ★ ; が来ないまま行が変わった → ; 抜けの可能性
+                    var previousNode = BuildStatementNode(currentStatementTokens, errors);
+                    if (previousNode != null) nodes.Add(previousNode);
+                    currentStatementTokens.Clear();
+                }
+
+                if (token.Type == TokenType.Header)
+                {
+                    if (currentStatementTokens.Count > 0)
+                    {
+                        var prevNode = BuildStatementNode(currentStatementTokens, errors);
+                        if (prevNode != null) nodes.Add(prevNode);
+                        currentStatementTokens.Clear();
+                    }
+                    currentStatementTokens.Add(token);
+                    var headerNode = BuildStatementNode(currentStatementTokens, errors);
+                    if (headerNode != null) nodes.Add(headerNode);
+                    currentStatementTokens.Clear();
+                    continue;
+                }
+
+                // ★ 同じ行に2つの文があり、間の ; が抜けているとき（例: Repeater['a'].End() Structure['b'].Put0(...);）
+                //    「) の後に名前が続く」ところで文を区切り、前の文の「; 抜け」を出す
+                //    （以前は1つの文としてつないでしまい、後ろの文が前のコマンドの引数として扱われて誤ったエラーになっていた）
+                if (IsNewStatementOnSameLine(currentStatementTokens, token))
+                {
+                    CheckMissingSemicolon(currentStatementTokens, errors);
+                    var previousNode = BuildStatementNode(currentStatementTokens, errors);
+                    if (previousNode != null) nodes.Add(previousNode);
+                    currentStatementTokens.Clear();
+                }
+
+                currentStatementTokens.Add(token);
+
+                if (token.Type == TokenType.Symbol && token.Value == ";")
+                {
+                    var node = BuildStatementNode(currentStatementTokens, errors);
+                    if (node != null)
+                    {
+                        nodes.Add(node);
+                    }
+                    currentStatementTokens.Clear();
+                }
+            }
+
+            // セミコロンなしで終わる単語（例: bsv）の取りこぼしを防ぐ
+            if (currentStatementTokens.Count > 0)
+            {
+                CheckMissingSemicolon(currentStatementTokens, errors); // ★ ファイルの最後の文に ; がない
+                var node = BuildStatementNode(currentStatementTokens, errors);
+                if (node != null)
+                {
+                    nodes.Add(node);
+                }
+            }
+
+            return nodes;
+        }
+
+        // ★ 文の始まりになる名前（コマンドの名前空間 Curve / Structure / Track … と include）。自動補完の辞書から作る
+        private static readonly Lazy<HashSet<string>> CommandStartWords = new(() =>
+        {
+            var words = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "include" };
+            try
+            {
+                foreach (var name in BveSyntaxProvider.GetValidCommands())
+                {
+                    if (!name.Contains('.') && !name.Contains(' ')) words.Add(name);
+                }
+            }
+            catch { }
+            return words;
+        });
+
+        // 文のカッコ ( ) [ ] がすべて閉じているか
+        private static bool AreBracketsClosed(List<Token> tokens)
+        {
+            int paren = 0, bracket = 0;
+            foreach (var t in tokens)
+            {
+                if (t.Type != TokenType.Symbol) continue;
+                if (t.Value == "(") paren++;
+                else if (t.Value == ")") paren--;
+                else if (t.Value == "[") bracket++;
+                else if (t.Value == "]") bracket--;
+            }
+            return paren <= 0 && bracket <= 0;
+        }
+
+        /// <summary>
+        /// ★ 同じ行で新しい文が始まっているか（間の ; が抜けている）を判定する。
+        /// ・今の文がコマンド（名前で始まる）で、最後が ) で、カッコ ( ) [ ] がすべて閉じている
+        /// ・次の単語が同じ行の名前（例: Structure）
+        /// </summary>
+        private static bool IsNewStatementOnSameLine(List<Token> current, Token next)
+        {
+            if (current.Count == 0 || next.Type != TokenType.Identifier) return false;
+            var last = current[current.Count - 1];
+            if (last.Line != next.Line || last.Type != TokenType.Symbol || last.Value != ")") return false;
+            if (current[0].Type != TokenType.Identifier) return false;
+            int paren = 0, bracket = 0;
+            foreach (var t in current)
+            {
+                if (t.Type != TokenType.Symbol) continue;
+                if (t.Value == "(") paren++;
+                else if (t.Value == ")") paren--;
+                else if (t.Value == "[") bracket++;
+                else if (t.Value == "]") bracket--;
+            }
+            return paren == 0 && bracket == 0;
+        }
+
+        /// <summary>
+        /// ★ 行が変わったときに、文が次の行へ続いているかを判定する。
+        /// ・前の行の最後が + = , ( [ . * / % - のどれか（式や引数の途中で改行している）
+        /// ・次の行の最初が + , ) ] . * / % のどれか、または数字ではない - （前の行の続き）
+        /// </summary>
+        private static bool IsStatementContinuation(Token lastToken, Token nextToken, List<Token>? current = null)
+        {
+            if (lastToken.Type == TokenType.Header || nextToken.Type == TokenType.Header) return false;
+            // ★ 次の行がコマンド（Curve / Structure / Track などの名前空間や include）で始まり、
+            //    今の文のカッコ ( ) [ ] がすべて閉じているなら、行の終わりが + などでもつなげない
+            //    （例: 「distance +」の次の行の「Curve.Begin(300);」が1つの文になり、どちらのエラーも出なかった）
+            if (current != null && nextToken.Type == TokenType.Identifier && CommandStartWords.Value.Contains(nextToken.Value) && AreBracketsClosed(current))
+            {
+                return false;
+            }
+            string last = lastToken.Value;
+            if ((lastToken.Type == TokenType.Symbol || lastToken.Type == TokenType.Unknown) &&
+                (last == "+" || last == "=" || last == "," || last == "(" || last == "[" || last == "." ||
+                 last == "*" || last == "/" || last == "%" || last == "-"))
+            {
+                return true;
+            }
+            string next = nextToken.Value;
+            if ((nextToken.Type == TokenType.Symbol || nextToken.Type == TokenType.Unknown) &&
+                (next == "+" || next == "," || next == ")" || next == "]" || next == "." ||
+                 next == "*" || next == "/" || next == "%" || next == "-"))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// ★ 「; 抜け」のチェック。文の最後が ; でなければエラーを追加する。
+        /// ・ヘッダー行（BveTs Map …）は対象外
+        /// ・カッコ ( ) や角括弧 [ ] が閉じていない文は、複数行にまたがって書いている可能性があるので対象外
+        /// </summary>
+        private static void CheckMissingSemicolon(List<Token> tokens, List<ParseError> errors)
+        {
+            if (tokens.Count == 0) return;
+            var last = tokens[tokens.Count - 1];
+            if (last.Type == TokenType.Symbol && last.Value == ";") return;
+            if (tokens.Any(t => t.Type == TokenType.Header || t.Type == TokenType.Comment)) return;
+
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            foreach (var t in tokens)
+            {
+                if (t.Type != TokenType.Symbol) continue; // 文字列の中のカッコは数えない（文字列は String トークン）
+                if (t.Value == "(") parenDepth++;
+                else if (t.Value == ")") parenDepth--;
+                else if (t.Value == "[") bracketDepth++;
+                else if (t.Value == "]") bracketDepth--;
+            }
+            if (parenDepth != 0 || bracketDepth != 0) return;
+
+            errors.Add(new ParseError
+            {
+                Level = "エラー",
+                Line = last.Line,
+                Column = last.Column, // 文の最後の単語・記号の位置（行末より後ろにすると波線が描けないため）
+                Length = last.Value.Length, // ★ 波線は文の最後の単語・記号だけに引く
+                Message = "文の終わりにセミコロン ';' がありません。"
+            });
+        }
+
+        private static void CheckConsecutiveSemicolons(List<Token> tokens, List<ParseError> errors)
+        {
+            for (int i = 0; i < tokens.Count - 1; i++)
+            {
+                if (tokens[i].Type == TokenType.Symbol && tokens[i].Value == ";" &&
+                    tokens[i + 1].Type == TokenType.Symbol && tokens[i + 1].Value == ";")
+                {
+                    errors.Add(new ParseError
+                    {
+                        Level = "情報",
+                        Line = tokens[i + 1].Line,
+                        Column = tokens[i + 1].Column,
+                        Message = "セミコロン ';' が複数連続して記述されています。"
+                    });
+                }
+            }
+        }
+
+        // ★ 高速化: BuildStatementNode で使う正規表現を最初に1回だけ作る（パターンは以前と同じ）
+        private static readonly Regex ParenCallRegex = new Regex(@"^[A-Za-z_][A-Za-z0-9_]*(\s*\[.*?\])?\s*\(.*\)$", RegexOptions.Compiled);
+        private static readonly Regex StartsWithDigitRegex = new Regex(@"^\d", RegexOptions.Compiled);
+        private static readonly Regex DistanceWordRegex = new Regex(@"\bdistance\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex OperatorRegex = new Regex(@"[\+\-\*\/\%]", RegexOptions.Compiled);
+        private static readonly Regex WrappedInParenRegex = new Regex(@"^\(.*\)$", RegexOptions.Compiled);
+        private static readonly Regex CommandStructureRegex = new Regex(@"^([A-Za-z0-9]+)(?:\s*\[\s*(?:'([^']+)'|""([^""]+)""|([^\]]+))\s*\])?(?:\s*\.\s*([A-Za-z0-9]+(?:\s*\.\s*[A-Za-z0-9]+)*))?(?:\s*\((.*)\s*\)$)", RegexOptions.Singleline | RegexOptions.Compiled);
+
+        // ★ 文の文字列を、単語の間の空白を元のファイルどおりに戻して組み立てる（同じ行は列の差だけ空白、行が変わったら空白1つ）
+        //    以前は「単語をスペース1つでつないだ文字列」（例: Track . Cant . SetGauge ( 1 ) ;）だったため、
+        //    「Track.」のように続けて書かれていることを前提にしたチェック（[] 抜け・. 抜け・Load のファイル確認など）が動いていなかった
+        private static string RebuildStatementText(List<Token> tokens)
+        {
+            var sb = new System.Text.StringBuilder();
+            // 先頭に「最初の単語の列 - 1」個の空白を入れ、文字列の位置 = 行の中の位置 になるようにする（エラーの列が正しくなる）
+            if (tokens.Count > 0 && tokens[0].Type != TokenType.Header && tokens[0].Column > 1) sb.Append(' ', tokens[0].Column - 1);
+            Token? prev = null;
+            foreach (var t in tokens)
+            {
+                if (prev != null)
+                {
+                    if (t.Line == prev.Line)
+                    {
+                        int gap = t.Column - (prev.Column + prev.Value.Length);
+                        if (gap > 0) sb.Append(' ', gap);
+                    }
+                    else
+                    {
+                        sb.Append(' ');
+                    }
+                }
+                sb.Append(t.Value);
+                prev = t;
+            }
+            return sb.ToString();
+        }
+
+        private static AstNode? BuildStatementNode(List<Token> tokens, List<ParseError> errors)
+        {
+            if (tokens.Count == 0) return null;
+            int line = tokens[0].Line;
+            int col = tokens[0].Column;
+            string fullStatement = RebuildStatementText(tokens);
+            if (tokens.All(t => t.Type == TokenType.Comment || (t.Type == TokenType.Symbol && t.Value == ";"))) return null;
+            
+            // 1. 変数の判定 ($で始まるものはすべて変数ノードへ)
+            if (tokens[0].Type == TokenType.Variable)
+            {
+                string varName = tokens[0].Value;
+                int eqIndex = tokens.FindIndex(t => t.Value == "=");
+                if (eqIndex > 0)
+                {
+                    string expr = string.Join(" ", tokens.Skip(eqIndex + 1).Take(tokens.Count - eqIndex - (tokens.Last().Value == ";" ? 2 : 1)).Select(t => t.Value));
+                    return new VariableAssignmentNode { VariableName = varName, Expression = expr, Line = line, Column = col };
+                }
+                else
+                {
+                    return new VariableAssignmentNode { VariableName = varName, Expression = string.Empty, Line = line, Column = col };
+                }
+            }
+
+            string codeCore = fullStatement.EndsWith(";") ? fullStatement.Substring(0, fullStatement.Length - 1).Trim() : fullStatement.Trim();
+            
+            // 2. 距離程の判定
+            bool hasDot = codeCore.Contains('.');
+            bool hasParenthesesCall = ParenCallRegex.IsMatch(codeCore);
+            bool isCommandLike = hasDot || hasParenthesesCall;
+
+            bool isDistanceExpr =
+                StartsWithDigitRegex.IsMatch(codeCore) ||
+                DistanceWordRegex.IsMatch(codeCore) ||
+                OperatorRegex.IsMatch(codeCore) ||
+                WrappedInParenRegex.IsMatch(codeCore);
+
+            if (!codeCore.Contains('=') && !isCommandLike && isDistanceExpr)
+            {
+                return new DistanceNode { Expression = codeCore, Line = line, Column = col };
+            }
+
+            // 3. コマンド構造解析
+            var cmdNode = new CommandNode
+            {
+                RawStatement = fullStatement,
+                Line = line,
+                Column = col
+            };
+
+            var match = CommandStructureRegex.Match(codeCore);
+            if (match.Success)
+            {
+                cmdNode.Namespace = match.Groups[1].Value;
+                if (match.Groups[2].Success) cmdNode.Key = match.Groups[2].Value;
+                else if (match.Groups[3].Success) cmdNode.Key = match.Groups[3].Value;
+                else if (match.Groups[4].Success) cmdNode.Key = match.Groups[4].Value.Trim('\'', '"');
+                if (match.Groups[5].Success)
+                {
+                    cmdNode.MethodName = Regex.Replace(match.Groups[5].Value, @"\s+", string.Empty);
+                }
+                if (match.Groups[6].Success)
+                {
+                    string argsStr = match.Groups[6].Value;
+                    cmdNode.Arguments = SplitArguments(argsStr);
+                }
+            }
+            else
+            {
+                cmdNode.Namespace = tokens[0].Value;
+                // ★ 「名前空間[キー].メソッド」の形なのに ( ) がない（例: Track['A'].Cant.SetGauge;）をエラーにする
+                if (MissingParenCommandRegex.IsMatch(codeCore))
+                {
+                    errors.Add(new ParseError
+                    {
+                        Level = "エラー",
+                        Line = line,
+                        Column = col,
+                        Length = codeCore.Trim().Length,
+                        Message = "コマンドの後に丸括弧 '()' がありません（例: Track['key'].Cant.SetGauge(1.067);）。"
+                    });
+                }
+            }
+            return cmdNode;
+        }
+
+        // ★ ( ) のないコマンドの形（名前空間、[キー] は省略可、. で続く名前が1つ以上）
+        private static readonly Regex MissingParenCommandRegex = new Regex(
+            @"^\s*[A-Za-z][A-Za-z0-9]*(\s*\[[^\]]*\])?(\s*\.\s*[A-Za-z][A-Za-z0-9]*)+\s*$", RegexOptions.Compiled);
+
+        private static List<string> SplitArguments(string argsStr)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrWhiteSpace(argsStr)) return list;
+            int depth = 0;
+            int bracketDepth = 0;
+            bool inQuote = false;
+            char quoteChar = '\0';
+            int lastPos = 0;
+            for (int i = 0; i < argsStr.Length; i++)
+            {
+                char c = argsStr[i];
+                if (inQuote)
+                {
+                    if (c == quoteChar) inQuote = false;
+                    continue;
+                }
+                if (c == '\'' || c == '"')
+                {
+                    inQuote = true;
+                    quoteChar = c;
+                    continue;
+                }
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if (c == '[') bracketDepth++;
+                else if (c == ']') bracketDepth--;
+                else if (c == ',' && depth == 0 && bracketDepth == 0)
+                {
+                    list.Add(argsStr.Substring(lastPos, i - lastPos).Trim());
+                    lastPos = i + 1;
+                }
+            }
+            if (lastPos < argsStr.Length)
+            {
+                list.Add(argsStr.Substring(lastPos).Trim());
+            }
+            return list;
+        }
+    }
+}

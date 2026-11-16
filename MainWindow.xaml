@@ -12,7 +12,13 @@
         <CommandBinding Command="ApplicationCommands.Save" Executed="MenuSave_Click" />
         <CommandBinding Command="ApplicationCommands.SaveAs" Executed="MenuSaveAs_Click" />
         <CommandBinding Command="ApplicationCommands.Close" Executed="MenuExit_Click" />
+        <!-- ★ Ctrl+F で検索ウィンドウを開く（メニューの「Ctrl+F」は表示だけで、キーにつながっていなかった） -->
+        <CommandBinding Command="ApplicationCommands.Find" Executed="MenuSearchCommand_Executed" />
     </Window.CommandBindings>
+    <!-- ★ Ctrl+Shift+S で「名前を付けて保存」（WPF の SaveAs には決まったキーがないため、ここでつなぐ） -->
+    <Window.InputBindings>
+        <KeyBinding Command="ApplicationCommands.SaveAs" Gesture="Ctrl+Shift+S" />
+    </Window.InputBindings>
 
     <DockPanel>
         <!-- 画面上部のメニューバー -->
@@ -35,12 +41,14 @@
                 <MenuItem Header="プロジェクトを上書き保存" Click="MenuSaveProject_Click"/> <!--仮タブ含むプロジェクトを保存-->
                 <MenuItem Header="プロジェクトを別名で保存" Click="MenuSaveProjectAs_Click"/> <!--仮タブ含むプロジェクトを名前を付けて保存-->
                 <Separator />
-                <MenuItem Header="タブを閉じる" Click="MenuCloseTab_Click" />
-                <MenuItem Header="すべてのタブを閉じる" Click="MenuCloseAllTabs_Click" />
+                <!-- ★ (2026-11-15) 閉じれるタブがない（空の「無題」タブ1つだけ）ときはグレーアウトする（MainWindow.xaml.cs の UpdateTabCloseState） -->
+                <MenuItem x:Name="MenuCloseTab" Header="タブを閉じる" Click="MenuCloseTab_Click" />
+                <MenuItem x:Name="MenuCloseAllTabs" Header="すべてのタブを閉じる" Click="MenuCloseAllTabs_Click" />
                 <MenuItem Header="終了(_X)" Command="ApplicationCommands.Close" />
                 <!--<MenuItem Header="Crash" Click="Crash_Click" />--><!--デバッグするならコメントアウト解除-->
             </MenuItem>
-            <MenuItem Header="編集">
+            <!-- ★ (2026-11-15) 開いたときに「貼り付け」などを押せるか調べ直す（EditMenu.cs の EditMenu_SubmenuOpened） -->
+            <MenuItem Header="編集" SubmenuOpened="EditMenu_SubmenuOpened">
                 <MenuItem x:Name="MenuUndo" Header="変更を戻す(_U)" Click="MenuUndo_Click" InputGestureText="Ctrl+Z" IsEnabled="False" />
                 <MenuItem x:Name="MenuRedo" Header="やり直す(_R)" Click="MenuRedo_Click" InputGestureText="Ctrl+Y" IsEnabled="False" />
                 <MenuItem x:Name="MenuCut" Header="切り取り(_T)" Click="MenuCut_Click" IsEnabled="False" />
@@ -58,8 +66,17 @@
                   Header="自動補完を有効にする(_A)" 
                   IsCheckable="True" 
                   Click="MenuAutoCompletion_Click" />
+                <!-- ★ キーの自動補完のオン・オフ -->
+                <MenuItem x:Name="MenuKeyCompletion"
+                  Header="キーの自動補完を有効にする(_K)"
+                  IsCheckable="True"
+                  Click="MenuKeyCompletion_Click" />
                     <MenuItem x:Name="MenuAllowOverwriteToggle" Header="Insertキーで上書き切替を許可" IsCheckable="True" Click="MenuAllowOverwriteToggle_Click" />
                     <MenuItem x:Name="MenuStatusBar" Header="ステータスバーを表示" IsCheckable="True" Click="MenuStatusBar_Click" />
+                    <!-- ★ (2026-11-16) 終了時にタブごとのカーソルの位置を記録し、次に開いたときに戻す（SettingsMenu.cs の MenuRememberCaret_Click） -->
+                    <MenuItem x:Name="MenuRememberCaret" Header="終了時のカーソル位置を記録する" IsCheckable="True" Click="MenuRememberCaret_Click" />
+                    <!-- ★ (2026-11-16) $変数 にマウスを乗せたら宣言を吹き出しで表示する（SettingsMenu.cs の MenuVariableHover_Click） -->
+                    <MenuItem x:Name="MenuVariableHover" Header="変数の宣言を吹き出しで表示する" IsCheckable="True" Click="MenuVariableHover_Click" />
                 <Separator />
                 <MenuItem Header="テーマ(_T)">
                     <MenuItem x:Name="MenuThemeSystem" Header="システム既定(_S)" IsCheckable="True" Click="ThemeMenuItem_Click" Tag="System" />
@@ -138,7 +155,52 @@
                     <RowDefinition Height="*" MinHeight="120" />
                     <RowDefinition Height="150" />
                 </Grid.RowDefinitions>
-                <TabControl x:Name="EditorTabControl" Grid.Row="0" MinHeight="120" SelectionChanged="EditorTabControl_SelectionChanged" >
+                <!-- ★ ContextMenuOpening: エディタを右クリックしたとき、その行のエラーの「修正の候補」をメニューの先頭に出す（ErrorFix.cs） -->
+                <TabControl x:Name="EditorTabControl" Grid.Row="0" MinHeight="120" SelectionChanged="EditorTabControl_SelectionChanged" ContextMenuOpening="EditorTabControl_ContextMenuOpening" >
+                    <!-- ★ タブ名をそのまま表示する。
+                         標準のままだとタブ名の「_」がキーボードショートカットの印として扱われ、表示から消えてしまう（例: map_01.txt → map01.txt）。
+                         TextBlock で表示すると「_」がそのまま表示される。コードで追加するタブにも自動で効く -->
+                    <TabControl.Resources>
+                        <!-- ★ 水平スクロールバーを常に表示する（コードで追加するタブのエディタにも効く）
+                             標準（Auto）だと、上下にスクロールして見えている行の長さが変わるたびに、
+                             水平スクロールバーが出たり消えたりして画面がガタガタしていた。
+                             「右端で折り返す」が有効なときは横スクロールが不要なので出さない -->
+                        <Style TargetType="avalonEdit:TextEditor">
+                            <Setter Property="HorizontalScrollBarVisibility" Value="Visible" />
+                            <Style.Triggers>
+                                <Trigger Property="WordWrap" Value="True">
+                                    <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                        <Style TargetType="TabItem" BasedOn="{StaticResource {x:Type TabItem}}">
+                            <Setter Property="HeaderTemplate">
+                                <Setter.Value>
+                                    <!-- ★ (2026-11-15) タブ名の横に × ボタンを付ける。タブ名の右クリックメニューと、マウスの真ん中ボタンでも閉じられる。
+                                         どれも未保存なら「保存しますか?」を出す（MainWindow.xaml.cs の CloseTab） -->
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Background="Transparent" MouseUp="TabHeader_MouseUp">
+                                            <StackPanel.ContextMenu>
+                                                <ContextMenu Opened="TabHeaderMenu_Opened">
+                                                    <MenuItem Header="閉じる" Tag="NeedClosable" Click="TabMenuClose_Click" />
+                                                    <MenuItem Header="ほかのタブをすべて閉じる" Tag="NeedOthers" Click="TabMenuCloseOthers_Click" />
+                                                    <MenuItem Header="すべてのタブを閉じる" Tag="NeedClosable" Click="TabMenuCloseAll_Click" />
+                                                    <Separator />
+                                                    <MenuItem Header="ファイルのパスをコピー" Tag="NeedPath" Click="TabMenuCopyPath_Click" />
+                                                    <MenuItem Header="ファイルの場所を開く" Tag="NeedPath" Click="TabMenuOpenFolder_Click" />
+                                                </ContextMenu>
+                                            </StackPanel.ContextMenu>
+                                            <TextBlock Text="{Binding}" VerticalAlignment="Center" />
+                                            <Button Content="×" ToolTip="タブを閉じる" Click="TabCloseButton_Click"
+                                                    Tag="TabClose" Loaded="TabCloseButton_Loaded"
+                                                    Focusable="False" Margin="6,0,0,0" Padding="3,0" FontSize="11"
+                                                    VerticalAlignment="Center" Background="Transparent" BorderThickness="0" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </TabControl.Resources>
                     <TabItem Header="無題" IsSelected="True">
                         <avalonEdit:TextEditor x:Name="MapTextEditor"
                                                MinHeight="120"
@@ -169,7 +231,12 @@
                 <DataGrid x:Name="ErrorListDataGrid"  Grid.Row="1" AutoGenerateColumns="False"  IsReadOnly="True"   MouseDoubleClick="ErrorListDataGrid_MouseDoubleClick" ContextMenuOpening="ErrorListDataGrid_ContextMenuOpening">
                     <DataGrid.ContextMenu>
                         <ContextMenu>
+                            <!-- ★ 修正の候補（中身はエラーに合わせて ErrorFix.cs の FillErrorFixMenu で作る） -->
+                            <MenuItem x:Name="MenuErrorFix" Header="修正の候補" />
+                            <Separator />
                             <MenuItem Header="行のコピー" Click="ErrorMenuCopy_Click" InputGestureText="Ctrl+C" />
+                            <!-- ★ (2026-11-16) エラー一覧の全部の行をタブ区切りでコピー（Excel・メモ帳に貼れる） -->
+                            <MenuItem Header="すべてコピー" Click="ErrorMenuCopyAll_Click" />
                             <Separator />
                             <MenuItem x:Name="MenuErrorSelectInTree" Header="ファイルツリーでこのファイルを選択" Click="ErrorMenuSelectInTree_Click" />
                             <MenuItem x:Name="MenuErrorOpenInExplorer" Header="エクスプローラーでファイルを表示" Click="ErrorMenuOpenInExplorer_Click" />

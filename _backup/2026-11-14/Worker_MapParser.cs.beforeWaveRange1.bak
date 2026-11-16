@@ -1,0 +1,122 @@
+﻿using DynamicExpresso;
+using System.Collections.ObjectModel;
+
+namespace BveMapParserWorker
+{
+    public class ParseError
+    {
+        public string Level { get; set; } = string.Empty;
+        public int Line { get; set; }
+        public int Column { get; set; }
+        public string Message { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+    }
+
+    public partial class MapParser
+    {
+        private static readonly Random _bveRandom = new();
+        public ObservableCollection<ParseError> ErrorLogList { get; set; } = [];
+
+        private static Interpreter CreateAndInitializeInterpreter()
+        {
+            var interpreter = new Interpreter(InterpreterOptions.DefaultCaseInsensitive);
+            interpreter.SetFunction("abs", (Func<double, double>)Math.Abs);
+            interpreter.SetFunction("atan2", (Func<double, double, double>)Math.Atan2);
+            interpreter.SetFunction("ceil", (Func<double, double>)Math.Ceiling);
+            interpreter.SetFunction("cos", (Func<double, double>)Math.Cos);
+            interpreter.SetFunction("exp", (Func<double, double>)Math.Exp);
+            interpreter.SetFunction("floor", (Func<double, double>)Math.Floor);
+            interpreter.SetFunction("log", (Func<double, double>)Math.Log);
+            interpreter.SetFunction("pow", (Func<double, double, double>)Math.Pow);
+            interpreter.SetFunction("sin", (Func<double, double>)Math.Sin);
+            interpreter.SetFunction("sqrt", (Func<double, double>)Math.Sqrt);
+            interpreter.SetFunction("rand", (Func<double>)(() => _bveRandom.NextDouble()));
+            interpreter.SetFunction("rand", (Func<double, double>)(value => _bveRandom.NextDouble() * value));
+            
+            interpreter.SetVariable("pi", Math.PI);
+            interpreter.SetVariable("distance", 0.0);
+            return interpreter;
+        }
+
+        public static List<ParseError> Parse(string text)
+        {
+            return Parse(text, string.Empty);
+        }
+
+        public static List<ParseError> Parse(string? text, string baseDirectory)
+        {
+            return Parse(text, baseDirectory, string.Empty, null, null);
+        }
+
+        /// <summary>
+        /// ★ インクルード対応版。
+        /// rootFilePath: ルートファイルのパス / unsavedTexts: 開いているタブの未保存の内容（パス → 本文）
+        /// parentMap: 親子対応表（インクルード先 → 親）を書き込む先。null なら作らない
+        /// </summary>
+        public static List<ParseError> Parse(string? text, string baseDirectory, string rootFilePath,
+            Dictionary<string, string>? unsavedTexts, Dictionary<string, string>? parentMap)
+        {
+            var errors = new List<ParseError>();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                errors.Add(new ParseError { Line = 1, Column = 1, Message = "ファイルが空です。" });
+                return errors;
+            }
+
+            var tokens = BveLexer.Tokenize(text, errors);
+            var astNodes = BveParser.ParseTokens(tokens, errors);
+            
+            Interpreter bveInterpreter = CreateAndInitializeInterpreter();
+            HashSet<string> validCommands = GetValidCommandsSafe();
+
+            var semanticErrors = BveSemanticAnalyzer.Analyze(
+                astNodes, baseDirectory, bveInterpreter, validCommands,
+                out bool headerFound, out bool stationLoadFound, out bool soundLoadFound,
+                out bool structureLoadFound, out bool sounddLoadFound, out bool signalLoadFound,
+                out int firstStationLoadLine, out int firstSoundLoadLine,
+                rootFilePath, unsavedTexts, parentMap
+            );
+            errors.AddRange(semanticErrors);
+
+            AddMissingLoadWarning(!stationLoadFound, "Station.Load", "必須の 'Station.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!soundLoadFound, "Sound.Load", "必須の 'Sound.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!sounddLoadFound, "Sound3D.Load", "必須の 'Sound3D.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!structureLoadFound, "Structure.Load", "必須の 'Structure.Load' が見つかりません。", errors);
+            AddMissingLoadWarning(!signalLoadFound, "Signal.Load", "必須の 'Signal.Load' が見つかりません。", errors);
+
+            return errors;
+        }
+
+        private static void AddMissingLoadWarning(bool notFound, string commandName, string message, List<ParseError> errors)
+        {
+            if (notFound)
+            {
+                errors.Add(new ParseError
+                {
+                    Level = "警告",
+                    Line = 1,
+                    Column = 1,
+                    Message = message
+                });
+            }
+        }
+
+        public static List<ParseError> QuickParseRegion(string text, int caretLine, int contextRadius, string baseDirectory)
+        {
+            var errors = new List<ParseError>();
+            return errors;
+        }
+
+        private static HashSet<string> GetValidCommandsSafe()
+        {
+            try
+            {
+                return BveSyntaxProvider.GetValidCommands();
+            }
+            catch
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+        }
+    }
+}

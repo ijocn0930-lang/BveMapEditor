@@ -13,14 +13,8 @@ namespace BveMapEditor
         //エクスプローラーペイン再読み込み
         private async void MenuRefreshTree_Click(object sender, RoutedEventArgs e)
         {
-            if (!string.IsNullOrEmpty(_currentRootFolderPath) && Directory.Exists(_currentRootFolderPath))
-            {
-                FileSystemNode? rootNode = await ScanDirectoryAsync(_currentRootFolderPath);
-                if (rootNode != null)
-                {
-                    LoadFileSystemToTreeView(rootNode);
-                }
-            }
+            // ★ (2026-11-15) 開いていたフォルダ・選んでいた項目・スクロール位置を残したまま読み込み直す（FileExplorerPaine.cs）
+            await RefreshTreeKeepingStateAsync();
         }
         //エクスプローラーペイン設定ファイルオープン
         private void MenuOpenInExplorer_Click(object sender, RoutedEventArgs e)

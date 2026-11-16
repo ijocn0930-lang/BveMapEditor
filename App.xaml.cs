@@ -63,35 +63,45 @@ namespace BveMapEditor
             }
 
             base.OnStartup(e);
-            // 1. 【最優先】ウィンドウを作る前に、カレントディレクトリをアプリのある場所に強制固定する
+
+            // 1. ダブルクリック起動などで渡された引数（ファイル）の絶対パスを保持しておく
+            // ★ (2026-11-15) カレントディレクトリを変える「前」に絶対パスにする（以前は変えた後だったため、相対パスで渡すとアプリのフォルダを探していた）
+            string? targetPath = null;
+            if (e.Args.Length > 0)
+            {
+                try { targetPath = Path.GetFullPath(e.Args[0]); } catch { targetPath = null; }
+            }
+
+            // 2. 【最優先】ウィンドウを作る前に、カレントディレクトリをアプリのある場所に強制固定する
             // これにより、AvalonEditなどのハイライトファイルが常に正しく見つかるようになります。
             string appDir = AppDomain.CurrentDomain.BaseDirectory;
             Directory.SetCurrentDirectory(appDir);
 
-            // 2. ダブルクリック起動などで渡された引数（.bveepファイル）の絶対パスを保持しておく
-            string? targetBveepPath = null;
-            if (e.Args.Length > 0)
-            {
-                // OSによってカレントディレクトリが変更されている状態を利用して絶対パスに変換
-                targetBveepPath = Path.GetFullPath(e.Args[0]);
-            }
-
             // 3. メインウィンドウを手動で生成・表示する
             var mainWindow = new MainWindow();
 
-            // 引数がある場合は、ウィンドウが完全に読み込まれてから .bveep を復元する
-            if (!string.IsNullOrEmpty(targetBveepPath))
+            // ★ (2026-11-15) .bveep のときだけエクスプローラーペインの設定として読む
+            //    それ以外（.txt など。「プログラムから開く」・exe へのドラッグ）は、いつもの自動復元の後にエディタで開く
+            //    （以前は何でも .bveep として読み、「有効なエクスプローラーペイン設定ファイルではありません」と出て開けなかった。自動復元もされなかった）
+            bool isBveep = !string.IsNullOrEmpty(targetPath) && string.Equals(Path.GetExtension(targetPath), ".bveep", StringComparison.OrdinalIgnoreCase);
+            if (isBveep)
             {
+                // ウィンドウが完全に読み込まれてから .bveep を復元する
                 mainWindow.Loaded += async (s, ev) =>
                 {
-                    await mainWindow.LoadBveepFileFromCommandLineAsync(targetBveepPath);
+                    await mainWindow.LoadBveepFileFromCommandLineAsync(targetPath!);
                 };
             }
-            else{
+            else
+            {
                 // ★ 通常起動時は、UIの初期化が完了した Loaded イベントのタイミングで自動復元を安全に実行
                 mainWindow.Loaded += async (s, ev) =>
                 {
-                    mainWindow.TryRestoreAutoSession(); // 必要に応じて TryRestoreAutoSession を public / internal にしておく
+                    await mainWindow.TryRestoreAutoSessionAsync();
+                    if (!string.IsNullOrEmpty(targetPath))
+                    {
+                        await mainWindow.OpenFileFromCommandLineAsync(targetPath);
+                    }
                 };
             }
             mainWindow.Show();

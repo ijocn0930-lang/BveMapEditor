@@ -7,6 +7,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <TextBlock Text="ファイルを保存する際のエンコーディングを選択してください。" TextWrapping="Wrap" MaxWidth="560" />
@@ -26,7 +27,12 @@
             </RadioButton>
         </StackPanel>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+        <!-- ★ チェックしたときだけ、このファイルの文字コードを記憶して次回からダイアログを出さない -->
+        <CheckBox x:Name="ChkRemember" Grid.Row="2" Margin="4,0,4,12" IsChecked="False">
+            <TextBlock Text="このファイルは次回から確認しない（この文字コードで上書き保存する。詳細設定の「特定ファイルの設定をリセット」で元に戻せます）" TextWrapping="Wrap" MaxWidth="560" />
+        </CheckBox>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button x:Name="BtnOk" Width="88" Margin="6" Click="BtnOk_Click">OK</Button>
             <Button x:Name="BtnCancel" Width="88" Margin="6" Click="BtnCancel_Click">キャンセル</Button>
         </StackPanel>

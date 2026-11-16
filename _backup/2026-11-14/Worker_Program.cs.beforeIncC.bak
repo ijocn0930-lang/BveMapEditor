@@ -1,0 +1,148 @@
+﻿using System;
+using System.IO;
+using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Text;
+using System.Text.Json;
+
+namespace BveMapParserWorker
+{
+    class Program
+    {
+        private const string PipeName = "BveMapParserPipe";
+
+        static void Main(string[] args)
+        {
+            // ★ 引数がない、または指定の引数("--worker")が含まれていない場合は単独起動とみなして即座に終了
+            if (args.Length == 0 || args[0] != "--worker")
+            {
+                return;
+            }
+            // 現在のユーザーのみにアクセスを許可する安全なACLを作成
+            var pipeSecurity = new PipeSecurity();
+            var currentUserIdentity = WindowsIdentity.GetCurrent().User;
+            if (currentUserIdentity != null)
+            {
+                pipeSecurity.AddAccessRule(new PipeAccessRule(
+                    currentUserIdentity,
+                    PipeAccessRights.FullControl,
+                    AccessControlType.Allow));
+            }
+            // 無限ループでメインアプリからの接続を常駐待ち受け
+            while (true)
+            {
+                NamedPipeServerStream? serverStream = null;
+                try
+                {
+                    // ★ コンストラクタに pipeSecurity を渡すことで、他ユーザーからの不正アクセスをブロック
+                    serverStream = NamedPipeServerStreamAcl.Create(
+                        PipeName,
+                        PipeDirection.InOut,
+                        1,
+                        PipeTransmissionMode.Message,
+                        PipeOptions.Asynchronous,
+                        4096,
+                        4096,
+                        pipeSecurity);
+                    serverStream.WaitForConnection();
+
+                    using var reader = new StreamReader(serverStream, Encoding.UTF8, leaveOpen: true);
+                    using var writer = new StreamWriter(serverStream, Encoding.UTF8, leaveOpen: true);
+                    string? jsonRequest = reader.ReadLine();
+                    if (string.IsNullOrEmpty(jsonRequest)) continue;
+                    // ★ 悪意ある巨大データや誤動作によるDoSを防ぐため、リクエスト全体の文字数に上限を設ける（例: 最大 20MB）
+                    if (jsonRequest.Length > 20 * 1024 * 1024)
+                    {
+                        var errorResponse = new List<ParseError>
+                        {
+                                new ParseError { Level = "エラー", Line = 1, Column = 1, Message = "リクエストデータが大きすぎるため、処理を拒否しました。" }
+                        };
+                        // ★ こちらもエディタが期待する形（ParseResponse）で返す
+                        string errJson = JsonSerializer.Serialize(new BveSemanticAnalyzer.ParseResponse { Errors = errorResponse });
+                        writer.WriteLine(errJson);
+                        writer.Flush();
+                        continue;
+                    }
+                    // リクエストをデコード
+                    // ★ エディタ（MainWindow.xaml.cs の ParseViaPipeAsync）と同じ形 BveSemanticAnalyzer.ParseRequest で受け取る
+                    //    （以前は古い形 ParseRequest で受け取っていたため、本文が空扱いになり通信が毎回失敗していた）
+                    var request = JsonSerializer.Deserialize<BveSemanticAnalyzer.ParseRequest>(jsonRequest);
+                    if (request != null)
+                    {
+                        // ルートファイルのあるフォルダを基準ディレクトリにする（無題のときは空）
+                        string baseDirectory = string.Empty;
+                        if (!string.IsNullOrEmpty(request.RouteFilePath))
+                        {
+                            baseDirectory = Path.GetDirectoryName(request.RouteFilePath) ?? string.Empty;
+                        }
+
+                        List<ParseError> errors;
+                        try
+                        {
+                            // マップパーサーでパースを実行
+                            errors = MapParser.Parse(request.RouteText, baseDirectory);
+                        }
+                        catch (OutOfMemoryException)
+                        {
+                            // メモリ不足が発生した場合の専用エラーを生成
+                            errors = new List<ParseError>
+                                    {
+                                        new ParseError
+                                        {
+                                            Level = "エラー",
+                                            Line = 1,
+                                            Column = 1,
+                                            Message = "ファイルが大きすぎるため、メモリ不足（OutOfMemory）により解析に失敗しました。"
+                                        }
+                                    };
+                        }
+                        catch (Exception ex)
+                        {
+                            // その他の予期せぬクラッシュ時
+                            errors = new List<ParseError>
+                                    {
+                                        new ParseError
+                                        {
+                                            Level = "エラー",
+                                            Line = 1,
+                                            Column = 1,
+                                            Message = $"パーサー内部でエラーが発生しました: {ex.Message}"
+                                        }
+                                    };
+                            Environment.FailFast("Unknown Error");
+                        }
+                        // 結果をJSONに変換してメインアプリに返送
+                        // ★ エディタが期待する形 BveSemanticAnalyzer.ParseResponse（Errors と ParentMap）で返す
+                        //    ParentMap（インクルードの親子対応表）は「インクルード先のエラーチェックを直す」作業で埋める予定。今は空
+                        var response = new BveSemanticAnalyzer.ParseResponse { Errors = errors };
+                        string jsonResponse = JsonSerializer.Serialize(response);
+                        writer.WriteLine(jsonResponse);
+                        writer.Flush();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // ログ出力など
+                    System.Diagnostics.Debug.WriteLine($"パイプ通信エラー: {ex.Message}");
+                }
+                finally
+                {
+                    // ストリームを確実に解放して次の接続に備える
+                    try
+                    {
+                        serverStream?.Dispose();
+                    }
+                    catch { }
+                }
+            }
+        }
+    }
+
+    // ★ 古いリクエストの形。現在は使っていない（BveSemanticAnalyzer.ParseRequest を使う）
+    public class ParseRequest
+    {
+        public string Text { get; set; } = string.Empty;
+        public string BaseDirectory { get; set; } = string.Empty;
+    }
+}

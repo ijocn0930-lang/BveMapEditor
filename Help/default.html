@@ -4,8 +4,9 @@
     <meta charset="utf-8">
     <title>BVE Map Editor - ヘルプ</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; }
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
         h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
         .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
         img { max-width: 100%; border: 1px solid #ccc; margin-top: 10px; border-radius: 4px; }
@@ -13,7 +14,7 @@
 </head>
 <body>
     <h1>BVE Map Editor エラー解説</h1>
-    
+
     <div class="box">
         <!-- C#側で置換される目印を配置 -->
         <p><span class="label">ファイル:</span> __FILE__</p>
@@ -22,11 +23,16 @@
     </div>
 
     <div class="box">
-        <h2>🛠️ 対処法・解説</h2>
-        <p>不明なエラーが発生しました。申し訳ありませんが、開発者に報告するか、構文などの原因特定をおすすめします。</p>
+        <h2>🛠️ 調べ方</h2>
+        <p>このエラーには、まだ専用の解説ページがありません。次の順に確認してください。</p>
+        <ol>
+            <li>エラー一覧の行をダブルクリックして、エラーの場所に移動する（波線の部分が、エラーの指している所です）</li>
+            <li>エラーの行やエディタの行を右クリック ➔「修正の候補」を見る（直し方がわかるものは、ここから直せます）</li>
+            <li>その行の前後の ; ・括弧・引用符 ' が正しく閉じているか確認する（1つ前の行の書き間違いが原因のこともあります）</li>
+            <li>右クリック ➔「Geminiに修正を依頼する」で、エラーの内容をコピーして相談する</li>
+        </ol>
         <!-- 画像も自由に追加できます -->
         <!-- <img src="images/error_example.png" alt="修正例"> -->
     </div>
-
 </body>
 </html>

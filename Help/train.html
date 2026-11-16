@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（他列車）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 他列車（Train）</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <p>他列車は <b>Train['キー'].Load('他列車ファイル', 軌道名, 方向);</b> で読み込んでから、Train['キー'].Enable / Stop などで動かします。</p>
+        <ul>
+            <li><b>トレインキー 'X' がロードされていないか、存在しません</b> … そのキーの Train[…].Load がない、またはこの行より後ろにあります。キーのつづりも確認してください。</li>
+            <li><b>他列車ファイルが見つかりません</b> … ファイル名か場所が違います（パスはこのマップファイルのフォルダから数えます）。</li>
+            <li><b>他列車ファイルのヘッダーが無効です</b> … 他列車ファイルの1行目が「BveTs Train 1.00」または「BveTs Train 1.01」で始まっていません。</li>
+            <li><b>他列車ファイルの読み込みに失敗しました</b> … ファイルを開けませんでした（ほかのソフトで開いている等）。</li>
+        </ul>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>正しい書き方の例</h3>
+        <div class="code ok">0;
+    Train['Local1'].Load('AddTrain_Formation\217r_15_D.txt', '1', -1);
+1000;
+    Train['Local1'].Enable('10:00:00');</div>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">「トレインキーがロードされていないか、存在しません」は、右クリック ➔「修正の候補」で、読み込み済みのキーからつづりの近いものを出します。</div>
+    </div>
+</body>
+</html>

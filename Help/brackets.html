@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（括弧）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 括弧 ( ) [ ]</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <p>コマンドの引数は丸括弧 <b>( )</b>、キーは角括弧 <b>[ ]</b> で囲みます。開いた括弧と閉じた括弧の数が合っていないとエラーになります。</p>
+        <ul>
+            <li><b>閉じ括弧 ')' / ']' が不足しています</b> … 閉じる括弧が足りません。</li>
+            <li><b>対応する '(' / '[' がない閉じ括弧が存在します</b> … 閉じる括弧が多すぎます。</li>
+            <li><b>コマンドの後に丸括弧 '()' がありません</b> … 引数がないコマンドでも ( ) は必要です。</li>
+            <li><b>括弧が演算子なしで連続して記述されています / 演算子不足または予期せぬ括弧の記述があります</b> … 式の中で ( ) と ( ) の間や、数値と ( の間に + などの演算子が抜けています。</li>
+        </ul>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>間違い</h3>
+        <div class="code ng">Curve.Begin(300, 0.105;
+Track['A'].Cant.SetGauge;
+Curve.Begin((300)(2));</div>
+        <h3>正しい</h3>
+        <div class="code ok">Curve.Begin(300, 0.105);
+Track['A'].Cant.SetGauge(1.067);
+Curve.Begin((300) * (2));</div>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">「コマンドの後に丸括弧 '()' がありません」は、右クリック ➔「修正の候補」➔「コマンドの後に () を付ける」で直せます。括弧の数が合わないものは、どこが正しいかを判断できないため、手で直してください。</div>
+    </div>
+</body>
+</html>

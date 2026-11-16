@@ -1,0 +1,1769 @@
+﻿using BveMapParserWorker;
+using ICSharpCode.AvalonEdit.CodeCompletion;
+using ICSharpCode.AvalonEdit.Document;
+using Microsoft.Win32;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Pipes;
+using System.Security.Principal;
+using System.Text;
+using System.Text.Json;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using static BveMapParserWorker.BveSemanticAnalyzer;
+
+namespace BveMapEditor
+{
+
+    // タブごとのセッション情報（ファイルパスのみを保持）
+    public class TabSessionItem
+    {
+        public string? FilePath { get; set; }
+        public bool IsActive { get; set; }
+    }
+
+    // プロジェクトファイル全体のデータ構造（.bveproj）
+    public class BveProjectData
+    {
+        public string RootFolderPath { get; set; } = string.Empty;
+        public List<TabSessionItem> Tabs { get; set; } = new List<TabSessionItem>();
+    }
+
+    /// <summary>
+    /// Interaction logic for MainWindow.xaml
+    /// </summary>
+    public partial class MainWindow : Window
+    {
+        // 子パス -> 親パス の紐付けを記録する辞書
+        private Dictionary<string, string> _childToParentMap = new(StringComparer.OrdinalIgnoreCase);
+        // ★ キーの自動補完用: ルートファイルごとの「読み込んだリストのキーの一覧」（構文チェックのたびにワーカーから受け取る）
+        //    ルートファイルのパス（無題は ""）→（"Structure" などの種類 → キー）
+        private readonly Dictionary<string, Dictionary<string, List<string>>> _keyListsByRoute = new(StringComparer.OrdinalIgnoreCase);
+        // ★ 接続先のパイプサーバーのプロセスIDを取得するためのWin32 API
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle hPipe, out uint serverProcessId);
+        private string? _currentProjectPath = null; // ★ 現在開いている .bveproj のパス
+        private Process? _parserWorkerProcess; //プロセス
+        // ★ パイプ通信の名前。エディタごとに違う名前にする（エディタのプロセスIDを付ける）
+        //    以前は固定の名前で、別のプログラムが先に同じ名前のパイプを作ると、そちらに接続してしまう恐れがあった（なりすまし）
+        //    また、エディタを2つ起動すると、2つ目のワーカーがパイプを作れずに CPU を使い続けていた
+        private static readonly string PipeName = $"BveMapParserPipe_{Environment.ProcessId}";
+        // アプリ起動時（MainWindowのコンストラクタなど）にワーカーを起動
+        private void StartParserWorker()
+        {
+            App.LogOperation("パーサーワーカーを起動");
+            try
+            {
+                // ワーカープロセスのEXEパスを指定（ビルド構成に合わせて調整）
+                string workerPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "BveMapParserWorker.exe");
+                if (File.Exists(workerPath))
+                {
+                    _parserWorkerProcess = new Process
+                    {
+                        StartInfo = new ProcessStartInfo
+                        {
+                            FileName = workerPath,
+                            Arguments = $"--worker --pipe {PipeName}", // ★ 起動用引数と、このエディタ専用のパイプの名前
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        }
+                    };
+                    _parserWorkerProcess.Start();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"パーサープロセスの起動に失敗しました: {ex.Message}");
+            }
+        }
+
+        // アプリ終了時にワーカープロセスも確実に終了させる
+        protected override void OnClosed(EventArgs e)
+        {
+            App.LogOperation("パーサーワーカーを終了 & セッション自動保存");
+            try
+            {
+                // 自動復元が有効な場合、現在の状態を自動保存
+                if (currentSettings != null && currentSettings.EnableAutoRestore)
+                {
+                    SaveAutoSession();
+                }
+            }
+            catch { }
+
+            try
+            {
+                if (_parserWorkerProcess != null)
+                {
+                    if (!_parserWorkerProcess.HasExited)
+                    {
+                        // プロセスに終了を試みる
+                        _parserWorkerProcess.Kill();
+
+                        // 終了したかどうかを一定時間（例: 2000ミリ秒）監視
+                        bool exited = _parserWorkerProcess.WaitForExit(2000);
+                        if (!exited || !_parserWorkerProcess.HasExited)
+                        {
+                            // 終了に失敗した場合はゾンビプロセスを防ぐため、FailFastで強制クラッシュさせる
+                            Environment.FailFast("パーサーワーカープロセスの終了に失敗しました。ゾンビプロセス防止のためアプリケーションを強制終了します。");
+                        }
+                    }
+                    _parserWorkerProcess.Dispose();
+                    _parserWorkerProcess = null;
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException && ex is not StackOverflowException)
+            {
+                // 万が一例外が発生した場合も、ゾンビプロセスを放置せず強制クラッシュさせる
+                Environment.FailFast($"パーサーワーカー終了処理中に予期せぬエラーが発生しました: {ex.Message}", ex);
+            }
+            base.OnClosed(e);
+        }
+
+        // ワーカーの再起動用ヘルパー
+        private void RestartParserWorker()
+        {
+            try
+            {
+                if (_parserWorkerProcess != null && !_parserWorkerProcess.HasExited)
+                {
+                    _parserWorkerProcess.Kill();
+                    _parserWorkerProcess.Dispose();
+                }
+            }
+            catch { }
+
+            StartParserWorker();
+        }
+        // タブごとのファイル情報を保持する小クラス
+        private class TabDocumentInfo
+        {
+            public ICSharpCode.AvalonEdit.TextEditor? Editor { get; set; }
+            public string? FilePath { get; set; }
+            // ★ 「変更なし」にしたとき（開いた・保存した・新規作成した時点）の本文を覚えておく
+            //    文字を書き換えるたびにこの本文と比べ、同じに戻ったら「変更なし」にする（元に戻すで戻した場合など）
+            //    （Editor を先に設定し、本文を入れた後で IsModified = false にすること）
+            private bool _isModified;
+            public bool IsModified
+            {
+                get => _isModified;
+                set
+                {
+                    _isModified = value;
+                    if (!value) OriginalText = Editor?.Text;
+                }
+            }
+            public string? OriginalText { get; private set; }
+            public Encoding? FileEncoding { get; set; }
+            public TabItem? TabItem { get; set; }
+        }
+
+        // 構文チェックのデバウンスとキャンセル用
+        private CancellationTokenSource? _syntaxCts;
+        private static readonly TimeSpan SyntaxDebounceDelay = TimeSpan.FromMilliseconds(700);
+
+        // メニューから現在のタブを閉じる
+        private void MenuCloseTab_Click(object sender, RoutedEventArgs e)
+        {
+            App.LogOperation("タブを閉じました");
+            CloseTab(null, promptToSave: true);
+        }
+
+        // メニューからすべてのタブを閉じる
+        private void MenuCloseAllTabs_Click(object sender, RoutedEventArgs e)
+        {
+            App.LogOperation("全てのタブを閉じました");
+            CloseAllTabs(promptToSave: true);
+        }
+
+        // タブを閉じる（指定タブまたはアクティブタブ）
+        private bool CloseTab(TabItem? tab, bool promptToSave = true)
+        {
+            if (EditorTabControl == null) return true;
+            tab ??= EditorTabControl.SelectedItem as TabItem;
+            if (tab == null) return true;
+            var info = GetTabInfo(tab);
+
+            if (promptToSave && info != null && info.IsModified)
+            {
+                var result = MessageBox.Show(this, $"'{tab.Header}' は未保存です。保存しますか?", "保存確認", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                if (result == MessageBoxResult.Cancel) return false;
+                if (result == MessageBoxResult.Yes)
+                {
+                    if (!SaveTabDocument(info)) return false;
+                }
+            }
+
+            EditorTabControl.Items.Remove(tab);
+            if (EditorTabControl.Items.Count == 0)
+            {
+                CreateNewUntitledTab();
+            }
+            return true;
+        }
+
+        // すべてのタブを閉じる
+        private bool CloseAllTabs(bool promptToSave = true)
+        {
+            if (EditorTabControl == null) return true;
+            if (promptToSave && !PromptSaveModifiedTabs()) return false;
+            EditorTabControl.Items.Clear();
+            CreateNewUntitledTab();
+            return true;
+        }
+
+        // ★ (2026-11-15) 未保存のタブがあれば「すべて保存しますか?」を聞く（CloseAllTabs から切り出し。プロジェクトを開くときにも使う）
+        //    戻り値: 続けてよければ true（保存した・保存しないを選んだ・未保存がない）、キャンセルや保存の失敗なら false
+        private bool PromptSaveModifiedTabs()
+        {
+            if (EditorTabControl == null) return true;
+            var modified = new System.Collections.Generic.List<TabDocumentInfo>();
+            foreach (var item in EditorTabControl.Items)
+            {
+                if (item is TabItem ti)
+                {
+                    var info = GetTabInfo(ti);
+                    if (info != null && info.IsModified) modified.Add(info);
+                }
+            }
+            if (modified.Count > 0)
+            {
+                var res = MessageBox.Show(this, "変更されたファイルをすべて保存しますか?", "保存確認", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+                if (res == MessageBoxResult.Cancel) return false;
+                if (res == MessageBoxResult.Yes)
+                {
+                    if (!SaveAllModifiedTabs(modified)) return false;
+                }
+            }
+            return true;
+        }
+
+        // ===== ★ (2026-11-15) タブ名の × ボタン・右クリックメニュー・真ん中ボタン =====
+        // どれも CloseTab を呼ぶので、未保存なら「保存しますか?」が出る
+
+        // ボタンやメニューから、そのタブ（TabItem）を探す
+        private static TabItem? FindTabItemFrom(object? source)
+        {
+            // 右クリックメニューの項目なら、メニューを開いた場所（タブ名）から探す
+            if (source is MenuItem mi)
+            {
+                DependencyObject? cur = mi;
+                while (cur != null && cur is not System.Windows.Controls.ContextMenu)
+                {
+                    cur = LogicalTreeHelper.GetParent(cur) ?? System.Windows.Media.VisualTreeHelper.GetParent(cur);
+                }
+                source = (cur as System.Windows.Controls.ContextMenu)?.PlacementTarget;
+            }
+            if (source is System.Windows.Controls.ContextMenu cm) source = cm.PlacementTarget;
+
+            var d = source as DependencyObject;
+            while (d != null && d is not TabItem)
+            {
+                d = System.Windows.Media.VisualTreeHelper.GetParent(d);
+            }
+            return d as TabItem;
+        }
+
+        // × ボタン
+        private void TabCloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            var tab = FindTabItemFrom(sender);
+            if (tab == null) return;
+            App.LogOperation("タブを閉じました（×ボタン）");
+            CloseTab(tab, promptToSave: true);
+            e.Handled = true;
+        }
+
+        // タブ名をマウスの真ん中ボタンで押したら閉じる
+        private void TabHeader_MouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != MouseButton.Middle) return;
+            var tab = FindTabItemFrom(sender);
+            if (tab == null) return;
+            App.LogOperation("タブを閉じました（真ん中ボタン）");
+            CloseTab(tab, promptToSave: true);
+            e.Handled = true;
+        }
+
+        // 右クリックメニューを開いたとき: 無題のタブ（ファイルがない）は「パスをコピー」「場所を開く」を使えなくする
+        private void TabHeaderMenu_Opened(object sender, RoutedEventArgs e)
+        {
+            if (sender is not System.Windows.Controls.ContextMenu cm) return;
+            var info = GetTabInfo(FindTabItemFrom(cm));
+            bool hasPath = info != null && !string.IsNullOrEmpty(info.FilePath);
+            foreach (var item in cm.Items.OfType<MenuItem>())
+            {
+                if ("NeedPath".Equals(item.Tag)) item.IsEnabled = hasPath;
+            }
+        }
+
+        // 右クリック ➔ 閉じる
+        private void TabMenuClose_Click(object sender, RoutedEventArgs e)
+        {
+            var tab = FindTabItemFrom(sender);
+            if (tab == null) return;
+            App.LogOperation("タブを閉じました（右クリック）");
+            CloseTab(tab, promptToSave: true);
+        }
+
+        // 右クリック ➔ ほかのタブをすべて閉じる（途中で「キャンセル」を押したらそこで止める）
+        private void TabMenuCloseOthers_Click(object sender, RoutedEventArgs e)
+        {
+            var keep = FindTabItemFrom(sender);
+            if (keep == null || EditorTabControl == null) return;
+            App.LogOperation("ほかのタブを閉じました");
+            var others = EditorTabControl.Items.OfType<TabItem>().Where(t => t != keep).ToList();
+            foreach (var t in others)
+            {
+                if (!CloseTab(t, promptToSave: true)) break;
+            }
+            if (EditorTabControl.Items.Contains(keep)) EditorTabControl.SelectedItem = keep;
+        }
+
+        // 右クリック ➔ すべてのタブを閉じる
+        private void TabMenuCloseAll_Click(object sender, RoutedEventArgs e)
+        {
+            App.LogOperation("全てのタブを閉じました（右クリック）");
+            CloseAllTabs(promptToSave: true);
+        }
+
+        // 右クリック ➔ ファイルのパスをコピー
+        private void TabMenuCopyPath_Click(object sender, RoutedEventArgs e)
+        {
+            var info = GetTabInfo(FindTabItemFrom(sender));
+            if (info == null || string.IsNullOrEmpty(info.FilePath)) return;
+            try
+            {
+                Clipboard.SetText(info.FilePath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"コピーできませんでした:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 右クリック ➔ ファイルの場所を開く（Windows のエクスプローラーで、そのファイルを選んだ状態で開く）
+        private void TabMenuOpenFolder_Click(object sender, RoutedEventArgs e)
+        {
+            var info = GetTabInfo(FindTabItemFrom(sender));
+            if (info == null || string.IsNullOrEmpty(info.FilePath)) return;
+            try
+            {
+                if (File.Exists(info.FilePath))
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{info.FilePath}\"") { UseShellExecute = true });
+                }
+                else
+                {
+                    MessageBox.Show(this, $"ファイルが見つかりません:\n{info.FilePath}", "ファイルの場所を開く", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"開けませんでした:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // 新しい無題タブを作成するヘルパー
+        private void CreateNewUntitledTab()
+        {
+            App.LogOperation("無題タブ生成");
+            if (EditorTabControl == null) return;
+
+            var editor = ActiveEditor ?? MapTextEditor;
+            // ★ 共通初期化を適用
+            InitializeEditor(editor);
+
+            var tab = new TabItem { Header = "無題", Content = editor };
+            var info = new TabDocumentInfo { Editor = editor, FilePath = null, IsModified = false, FileEncoding = null, TabItem = tab };
+            tab.Tag = info;
+            EditorTabControl.Items.Add(tab);
+            EditorTabControl.SelectedItem = tab;
+            UpdateEncodingStatus();
+        }
+        private static TabDocumentInfo? GetTabInfo(TabItem? tab)
+        {
+            return tab?.Tag as TabDocumentInfo;
+        }
+
+        private TabDocumentInfo? FindTabByEditor(ICSharpCode.AvalonEdit.TextEditor? editor)
+        {
+            if (editor == null || EditorTabControl == null) return null;
+            foreach (var item in EditorTabControl.Items)
+            {
+                if (item is TabItem ti && ti.Content is ICSharpCode.AvalonEdit.TextEditor te)
+                {
+                    if (te == editor) return ti.Tag as TabDocumentInfo;
+                }
+            }
+            return null;
+        }
+
+        private bool SaveAllModifiedTabs(System.Collections.Generic.List<TabDocumentInfo> modifiedTabs)
+        {
+            foreach (var info in modifiedTabs)
+            {
+                if (!SaveTabDocument(info))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private bool SaveTabDocument(TabDocumentInfo info)
+        {
+            App.LogOperation($"タブ文書の保存: {info.FilePath ?? "無題"}");
+            if (info == null || info.Editor == null || info.TabItem == null) return true;
+            var prev = EditorTabControl?.SelectedItem;
+            try
+            {
+                EditorTabControl?.SelectedItem = info.TabItem;
+                if (!string.IsNullOrEmpty(info.FilePath))
+                {
+                    currentFilePath = info.FilePath;
+                    // ★ 保存がキャンセル・失敗したら false を返し、閉じる処理を止める（内容が失われるのを防ぐ）
+                    if (!SaveFile(info.FilePath, info.FileEncoding, useDialogIfNull: false)) return false;
+                    info.IsModified = false;
+                    return true;
+                }
+                var saveFileDialog = new SaveFileDialog
+                {
+                    Filter = "Map File (*.txt)|*.txt|All Files (*.*)|*.*",
+                    Title = "名前を付けて保存",
+                    DefaultExt = ".txt"
+                };
+                if (saveFileDialog.ShowDialog() == true)
+                {
+                    string path = saveFileDialog.FileName;
+                    currentFilePath = path;
+                    if (!SaveFile(path)) return false; // ★ キャンセル・失敗なら閉じない
+                    info.FilePath = path;
+                    info.IsModified = false;
+                    return true;
+                }
+                return false;
+            }
+            finally
+            {
+                EditorTabControl?.SelectedItem = prev;
+            }
+        }
+
+        private Dictionary<ICSharpCode.AvalonEdit.TextEditor, ErrorUnderlineRenderer> _underlineRenderers = [];
+        private string _copiedFilePath = string.Empty;
+        private bool _isOverwriteMode = false;
+
+        private void UpdateEditModeStatus()
+        {
+            Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    EditModeText?.Text = _isOverwriteMode ? "上書き" : "挿入";
+                }
+                catch
+                {
+                    // ignore
+                }
+            });
+        }
+
+        private void MenuStatusBar_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is MenuItem mi && MainStatusBar != null)
+                {
+                    MainStatusBar.Visibility = mi.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                    currentSettings.ShowStatusBar = mi.IsChecked;
+                    currentSettings.Save();
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private void MenuAllowOverwriteToggle_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is MenuItem mi)
+                {
+                    currentSettings.AllowOverwriteToggle = mi.IsChecked;
+                    currentSettings.Save();
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private void UpdateCaretPositionStatus()
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (CaretPositionText == null) return;
+                try
+                {
+                    var editor = ActiveEditor;
+                    if (editor?.TextArea?.Caret != null && editor.Document != null)
+                    {
+                        int line = editor.TextArea.Caret.Line;
+                        int column = editor.TextArea.Caret.Column;
+                        CaretPositionText.Text = $"行 {line} 列 {column}";
+                        return;
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    var editor = ActiveEditor;
+                    if (editor?.Document != null && editor.TextArea?.Caret != null)
+                    {
+                        var loc = editor.Document.GetLocation(editor.TextArea.Caret.Offset);
+                        CaretPositionText.Text = $"行 {loc.Line} 列 {loc.Column}";
+                        return;
+                    }
+                }
+                catch { }
+                CaretPositionText.Text = string.Empty;
+            });
+        }
+
+        private ICSharpCode.AvalonEdit.TextEditor? GetActiveEditor()
+        {
+            if (EditorTabControl?.SelectedItem is TabItem ti && ti.Content is ICSharpCode.AvalonEdit.TextEditor te)
+            {
+                return te;
+            }
+            if (MapTextEditor != null) return MapTextEditor;
+            return null;
+        }
+
+        private ICSharpCode.AvalonEdit.TextEditor? ActiveEditor => GetActiveEditor();
+
+
+        private string _currentRootFolderPath = string.Empty;
+        private string _currentBveepFilePath = string.Empty;
+
+
+        // クラスのフィールド等で保持しておく
+        private static readonly ICompletionData[] cachedSyntaxes = BveSyntaxProvider.GetAllSyntaxes().ToArray();
+
+        private AppSettings currentSettings;
+        private string? currentFilePath = null;
+        private Encoding? currentFileEncoding = null;
+        private bool isModified = false;
+        private bool isInitializing = false;
+        private bool isLoading = false;
+        // エディタごとの現在行ハイライトレンダラーを保持する辞書
+        private readonly Dictionary<ICSharpCode.AvalonEdit.TextEditor, CurrentLineHighlightRenderer> _currentLineRenderers = new();
+        private static Encoding DetectEncodingFromSample(byte[] sample)
+        {
+            if (sample == null || sample.Length == 0) return Encoding.Default;
+
+            // 1. BOMのチェック
+            if (sample.Length >= 3 && sample[0] == 0xEF && sample[1] == 0xBB && sample[2] == 0xBF)
+            {
+                // ★ BOM付きとして扱う（保存時に「元の文字コードを保持」で BOM付きのまま保存される）
+                return new UTF8Encoding(true);
+            }
+            if (sample.Length >= 2 && sample[0] == 0xFF && sample[1] == 0xFE)
+            {
+                return Encoding.Unicode;
+            }
+            if (sample.Length >= 2 && sample[0] == 0xFE && sample[1] == 0xFF)
+            {
+                return Encoding.BigEndianUnicode;
+            }
+            if (sample.Length >= 4 && sample[0] == 0x00 && sample[1] == 0x00 && sample[2] == 0xFE && sample[3] == 0xFF)
+            {
+                return Encoding.UTF32;
+            }
+
+            // 2. UTF-8としての厳密な妥当性チェック
+            // ★ 呼び出し側はファイル全体のバイト列を渡すこと（先頭だけだと誤判定するため）
+            //    Utf8.IsValid は文字列を作らずに確認するので、大きいファイルでもメモリを余分に使わない
+            if (System.Text.Unicode.Utf8.IsValid(sample))
+            {
+                return new UTF8Encoding(false); // UTF-8 として正しければ UTF-8（BOMなし）
+            }
+            // UTF-8として不正なバイトが含まれている場合はShift-JIS（CP932）等へフォールバック
+
+            // 3. Shift-JIS (CP932) へのフォールバック
+            try
+            {
+                Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+                return Encoding.GetEncoding(932);
+            }
+            catch
+            {
+                return Encoding.Default;
+            }
+        }
+        /// <summary>
+        /// 読み込んだ文字列の先頭に残った BOM（見えない文字 U+FEFF）を取り除く。
+        /// BOM は文字コードの目印なので本文には含めない（保存時に文字コード側で付け直す）。
+        /// </summary>
+        private static string RemoveLeadingBom(string text)
+        {
+            if (!string.IsNullOrEmpty(text) && text[0] == '﻿')
+            {
+                return text.Substring(1);
+            }
+            return text;
+        }
+        private CurrentLineHighlightRenderer GetOrCreateCurrentLineRenderer(ICSharpCode.AvalonEdit.TextEditor editor)
+        {
+            if (editor?.TextArea?.TextView == null) return null!;
+
+            // 1. 既に辞書に保持しており、かつTextViewに正しく含まれているか確認
+            if (_currentLineRenderers.TryGetValue(editor, out var renderer) && renderer != null)
+            {
+                if (editor.TextArea.TextView.BackgroundRenderers.Contains(renderer))
+                {
+                    return renderer;
+                }
+            }
+
+            // 2. 万が一、辞書の外でTextViewに同種のレンダラーが既に存在する場合はそれを再利用する
+            var existing = editor.TextArea.TextView.BackgroundRenderers
+                .OfType<CurrentLineHighlightRenderer>()
+                .FirstOrDefault();
+
+            if (existing != null)
+            {
+                _currentLineRenderers[editor] = existing;
+                return existing;
+            }
+
+            // 3. どちらにもなければ新しく作成して追加する
+            renderer = new CurrentLineHighlightRenderer(editor.TextArea);
+            editor.TextArea.TextView.BackgroundRenderers.Add(renderer);
+            _currentLineRenderers[editor] = renderer;
+
+            return renderer;
+        }
+        private static async Task<string[]> ReadAllLinesWithAnsiFallbackAsync(string path)
+        {
+            byte[] bytes = await File.ReadAllBytesAsync(path);
+            Encoding enc = DetectEncodingFromSample(bytes); // ★ ファイル全体で判定
+            string text;
+            try
+            {
+                text = enc.GetString(bytes);
+            }
+            catch
+            {
+                text = Encoding.Default.GetString(bytes);
+            }
+            text = RemoveLeadingBom(text); // ★ 先頭の BOM 文字を取り除く
+            return text.Split(["\r\n", "\n"], StringSplitOptions.None);
+        }
+
+        private FileSystemWatcher? _fileSystemWatcher;
+
+        public MainWindow()
+        {
+            isInitializing = true;
+            InitializeComponent();
+            // ★ 管理者権限で実行されているかをチェックし、セキュリティ低下の警告を表示
+            CheckAdministratorWarning();
+            // ★ パーサーワーカープロセス（別プロセス）を起動
+            StartParserWorker();
+
+            try
+            {
+                if (MenuStatusBar != null && MainStatusBar != null)
+                {
+                    MenuStatusBar.IsChecked = MainStatusBar.Visibility == Visibility.Visible;
+                }
+            }
+            catch { }
+
+            var editor = ActiveEditor ?? MapTextEditor;
+            var underlineRenderer = new ErrorUnderlineRenderer(editor);
+            editor.TextArea.TextView.BackgroundRenderers.Add(underlineRenderer);
+            _underlineRenderers[editor] = underlineRenderer;
+
+            if (editor.Document != null && editor.Document.UndoStack != null)
+            {
+                editor.Document.UndoStack.PropertyChanged += UndoStack_PropertyChanged;
+            }
+
+            MapHighlighter.InitializeHighlighting(editor);
+            currentSettings = AppSettings.Load();
+            ApplySettingsToEditor();
+            ApplyWindowSettings();
+            MapHighlighter.InitializeHighlighting(editor);
+
+            var options = editor.Options;
+            options.EnableEmailHyperlinks = false;
+            options.EnableHyperlinks = false;
+            options.EnableRectangularSelection = false;
+            options.AllowScrollBelowDocument = true;
+            options.ShowBoxForControlCharacters = false;
+            options.ShowSpaces = false;
+            options.ShowEndOfLine = false;
+
+            if (editor != null)
+            {
+                editor.TextArea.TextEntered += MapTextEditor_TextEntered;
+                editor.TextArea.TextEntering += MapTextEditor_TextEntering;
+            }
+
+            try
+            {
+                if (EditorTabControl != null && EditorTabControl.Items.Count > 0 && EditorTabControl.Items[0] is TabItem firstTab)
+                {
+                    var info = new TabDocumentInfo { Editor = MapTextEditor, FilePath = null, IsModified = false, FileEncoding = null, TabItem = firstTab };
+                    firstTab.Tag = info;
+                }
+            }
+            catch { }
+
+            editor?.TextArea.KeyDown += (s, e) =>
+            {
+                try
+                {
+                    if (e.Key == Key.Insert)
+                    {
+                        if (currentSettings == null || currentSettings.AllowOverwriteToggle)
+                        {
+                            _isOverwriteMode = !_isOverwriteMode;
+                            UpdateEditModeStatus();
+                        }
+                        e.Handled = true;
+                    }
+                }
+                catch { }
+            };
+
+            editor?.PreviewKeyDown += (s, e) =>
+            {
+                try
+                {
+                    if (e.Key == Key.Insert)
+                    {
+                        if (currentSettings == null || currentSettings.AllowOverwriteToggle)
+                        {
+                            _isOverwriteMode = !_isOverwriteMode;
+                            UpdateEditModeStatus();
+                        }
+                        e.Handled = true;
+                    }
+                }
+                catch { }
+            };
+
+            if (editor?.Document != null && editor.Document.UndoStack != null)
+            {
+                editor.Document.UndoStack.PropertyChanged += UndoStack_PropertyChanged;
+            }
+            UpdateEditMenuState();
+
+            editor?.TextArea.SelectionChanged += (s, e) =>
+            {
+                UpdateEditMenuState();
+                UpdateCaretPositionStatus();
+            };
+
+            if (editor?.TextArea != null)
+            {
+                var highlightRenderer = new CurrentLineHighlightRenderer(editor.TextArea);
+                editor.TextArea.TextView.BackgroundRenderers.Add(highlightRenderer);
+                editor.TextArea.Caret.PositionChanged += (s, ea) =>
+                {
+                    editor.TextArea.TextView.InvalidateVisual();
+                    UpdateCaretPositionStatus();
+                    OnCaretMovedForKeyCompletion(editor); // ★ キーが空の [''] にカーソルが来たらキーの候補を出す
+                };
+            }
+
+            UpdateCaretPositionStatus();
+            UpdateEditModeStatus();
+
+            // 初期表示用の即時パース実行
+            RunSyntaxCheck();
+            isInitializing = false;
+        }
+        // 管理者権限での実行を検知して警告するメソッド
+        private void CheckAdministratorWarning()
+        {
+            try
+            {
+                var identity = WindowsIdentity.GetCurrent();
+                var principal = new WindowsPrincipal(identity);
+                if (principal.IsInRole(WindowsBuiltInRole.Administrator))
+                {
+                    App.LogOperation("警告: アプリケーションが管理者権限で実行されています。");
+                    MessageBox.Show(
+                        this,
+                        "【セキュリティ警告】\n\n" +
+                        "現在、BVE Map Editor が管理者権限で実行されています。\n" +
+                        "管理者権限での実行はシステム全体のセキュリティリスクを高める可能性があります。\n" +
+                        "特別な理由がない限り、通常の一般ユーザー権限で実行してください。",
+                        "セキュリティの警告",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"管理者権限チェックエラー: {ex.Message}");
+            }
+        }
+        private CompletionWindow? completionWindow;
+
+        private void ApplyWindowSettings()
+        {
+            if (currentSettings.WindowWidth > 0 && currentSettings.WindowHeight > 0)
+            {
+                this.Width = currentSettings.WindowWidth;
+                this.Height = currentSettings.WindowHeight;
+            }
+            if (currentSettings.IsMaximized)
+            {
+                this.WindowState = WindowState.Maximized;
+            }
+            if (ExplorerColumn != null && currentSettings.ExplorerPaneWidth > 0)
+            {
+                ExplorerColumn.Width = new GridLength(currentSettings.ExplorerPaneWidth);
+            }
+            try
+            {
+                MainStatusBar?.Visibility = currentSettings.ShowStatusBar ? Visibility.Visible : Visibility.Collapsed;
+                MenuStatusBar?.IsChecked = currentSettings.ShowStatusBar;
+            }
+            catch { }
+        }
+
+        private void UndoStack_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            UpdateEditMenuState();
+        }
+
+        private void UpdateEditMenuState()
+        {
+            var editor = ActiveEditor;
+            if (editor != null)
+            {
+                MenuUndo.IsEnabled = editor.Document?.UndoStack?.CanUndo ?? false;
+                MenuRedo.IsEnabled = editor.Document?.UndoStack?.CanRedo ?? false;
+            }
+            else
+            {
+                MenuUndo.IsEnabled = false;
+                MenuRedo.IsEnabled = false;
+            }
+            bool hasSelection = editor?.SelectionLength > 0;
+            if (MenuCut != null) MenuCut.IsEnabled = hasSelection;
+            if (MenuCopy != null) MenuCopy.IsEnabled = hasSelection;
+            if (MenuPaste != null) MenuPaste.IsEnabled = Clipboard.ContainsText();
+        }
+
+        private async void ErrorListDataGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (ErrorListDataGrid.SelectedItem is not ParseError selectedError) return;
+
+            // ★ ファイルを開く部分は「修正の候補」でも使うため OpenErrorFileAsync に分けた（動きは以前と同じ）
+            await OpenErrorFileAsync(selectedError);
+
+            // エラー位置へのジャンプを実行
+            JumpToErrorPosition(selectedError.Line, selectedError.Column);
+        }
+
+        // ★ エラーのファイルが指定されていて存在すれば、そのファイルのタブを開く（またはアクティブにする）
+        private async Task OpenErrorFileAsync(ParseError selectedError)
+        {
+            string? targetPath = selectedError.FileName;
+            if (!string.IsNullOrEmpty(targetPath) && !Path.IsPathRooted(targetPath))
+            {
+                string? currentPath = GetTabInfo(EditorTabControl?.SelectedItem as TabItem)?.FilePath ?? currentFilePath;
+                string baseDirectory = !string.IsNullOrEmpty(currentPath)
+                    ? Path.GetDirectoryName(currentPath) ?? string.Empty
+                    : _currentRootFolderPath;
+                targetPath = Path.GetFullPath(Path.Combine(baseDirectory, targetPath));
+            }
+
+            // ★ ファイル名が空のエラーはルートファイルのもの。インクルード先のタブを見ているときは、親をたどってルートファイルを開く
+            //    （以前は今のタブのまま行へ移動していたため、インクルード先のタブでは違うファイルの行へ移動していた）
+            if (string.IsNullOrEmpty(targetPath))
+            {
+                targetPath = GetRootFilePath(GetTabInfo(EditorTabControl?.SelectedItem as TabItem)?.FilePath ?? currentFilePath);
+            }
+
+            // ファイルが指定されており存在する場合、該当ファイルをタブで開く、またはアクティブにする
+            if (!string.IsNullOrEmpty(targetPath) && File.Exists(targetPath))
+            {
+                string? activePath = GetTabInfo(EditorTabControl?.SelectedItem as TabItem)?.FilePath ?? currentFilePath;
+                if (!string.Equals(activePath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    // ★ すでに別のタブで開いていれば、確認を出さずにそのタブへ切り替える
+                    if (!SelectTabByPath(targetPath))
+                    {
+                        await OpenFileAsync(targetPath);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// ★ インクルード先のファイルから、親子対応表（_childToParentMap）をたどってルートファイル（いちばん上の親）のパスを返す。
+        ///    親がなければそのまま返す。循環していたらそこで止める
+        ///    （整理 2026-11-15: 構文チェック・エラーのファイルを開く・キーの一覧の3か所にあった同じ処理をまとめた）
+        /// </summary>
+        // ★ (2026-11-15) 最後に構文チェックしたマップ（ルートファイル）。CSV などマップでないタブを見ているときは、これを調べる
+        private volatile string? _lastMapRootPath;
+
+        /// <summary>
+        /// ★ (2026-11-15) マップでないファイルか（.csv、または先頭が「BveTs」で始まるが「BveTs Map」ではないファイル: リストファイル・車両ファイルなど）
+        /// ヘッダーのない .txt（include 先など）は今まで通りマップとして扱う
+        /// </summary>
+        private static bool IsNonMapText(string? path, string text)
+        {
+            if (!string.IsNullOrEmpty(path) && string.Equals(Path.GetExtension(path), ".csv", StringComparison.OrdinalIgnoreCase)) return true;
+            string head = text.TrimStart('﻿', ' ', '\t', '\r', '\n');
+            return head.StartsWith("BveTs", StringComparison.OrdinalIgnoreCase)
+                && !head.StartsWith("BveTs Map", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string GetRootFilePath(string? path)
+        {
+            string root = path ?? string.Empty;
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            while (!string.IsNullOrEmpty(root) && _childToParentMap.TryGetValue(root, out var parent))
+            {
+                if (!visited.Add(root)) break; // 循環回避
+                root = parent;
+            }
+            return root;
+        }
+
+        // ★ エディタに戻ってきたとき（ウィンドウが前に出たとき）に構文チェックをやり直す
+        //    （別のソフトでリストファイル（CSV）や include 先を直して保存した後、エディタに戻ったら新しい内容で調べ直すため。
+        //     以前はマップを書き換えるかタブを切り替えるまで、古い結果のままだった）
+        //    起動して最初に前に出たときは、ほかの処理が構文チェックをするので何もしない
+        private bool _activatedOnce;
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            if (_activatedOnce) RunSyntaxCheck();
+            _activatedOnce = true;
+        }
+
+        // ★ 指定したファイルを開いているタブがあれば、そのタブに切り替えて true を返す
+        private bool SelectTabByPath(string path)
+        {
+            if (EditorTabControl == null) return false;
+            foreach (var item in EditorTabControl.Items)
+            {
+                if (item is TabItem ti && GetTabInfo(ti) is TabDocumentInfo info &&
+                    !string.IsNullOrEmpty(info.FilePath) && string.Equals(info.FilePath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    EditorTabControl.SelectedItem = ti;
+                    return true;
+                }
+            }
+            return false;
+        }
+        // タブ切り替え時に ErrorList および波線を更新
+        private void EditorTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            App.LogOperation("tab切り替え");
+            try
+            {
+                var editor = ActiveEditor;
+                if (editor != null)
+                {
+                    isInitializing = true;
+                    MapHighlighter.InitializeHighlighting(editor);
+                    try { editor.TextArea.TextEntered -= MapTextEditor_TextEntered; } catch { }
+                    try { editor.TextArea.TextEntering -= MapTextEditor_TextEntering; } catch { }
+                    editor.TextArea.TextEntered += MapTextEditor_TextEntered;
+                    editor.TextArea.TextEntering += MapTextEditor_TextEntering;
+
+                    GetOrCreateRenderer(editor);
+                    // ★ 現在行ハイライトのレンダラーを確保・適用
+                    GetOrCreateCurrentLineRenderer(editor);
+
+                    string? targetPath = currentFilePath;
+                    var activeInfo = GetTabInfo(EditorTabControl?.SelectedItem as TabItem);
+                    if (activeInfo != null && !string.IsNullOrEmpty(activeInfo.FilePath))
+                    {
+                        targetPath = activeInfo.FilePath;
+                    }
+                    // ★ 文字コードをタブごとに切り替える（上書き保存で別タブの文字コードが使われるのを防ぐ）
+                    if (activeInfo != null)
+                    {
+                        currentFileEncoding = activeInfo.FileEncoding;
+                    }
+
+                    try
+                    {
+                        if (editor.Document?.UndoStack != null)
+                        {
+                            editor.Document.UndoStack.PropertyChanged -= UndoStack_PropertyChanged;
+                            editor.Document.UndoStack.PropertyChanged += UndoStack_PropertyChanged;
+                        }
+                        isInitializing = false;
+                    }
+                    catch
+                    {
+                        isInitializing = false;
+                    }
+
+                    // タブ切替時に即座にパース＆波線更新
+                    // ★ タブ切替時は即時パースではなく、キャンセル処理付きの RunSyntaxCheck() を経由させることで競合を防ぐ
+                    RunSyntaxCheck();
+                    // ★ タブ切り替え直後にビューを強制再描画してハイライトを確実に表示
+                    editor.TextArea.TextView.Redraw();
+                    // ★ 追加：プロジェクト読み込み・復元完了後にタイトルバーを更新
+                    UpdateTitle();
+                    UpdateEncodingStatus();
+
+                    // ★ 検索ウィンドウが開いていれば、検索する相手を切り替えた先のタブにする
+                    //    （以前は開いたときのタブを検索し続け、見えていない前のタブを検索・置換していた）
+                    if (_searchWindow != null && _searchWindow.IsLoaded)
+                    {
+                        _searchWindow.SetEditor(editor);
+                    }
+                }
+            }
+            catch
+            {
+                isInitializing = false;
+            }
+        }
+
+        private void JumpToErrorPosition(int lineNumber, int columnNumber)
+        {
+            App.LogOperation("ErrorListGridがクリックされました");
+            try
+            {
+                if (lineNumber < 1) lineNumber = 1;
+                if (columnNumber < 1) columnNumber = 1;
+                var editor = ActiveEditor ?? MapTextEditor;
+                if (editor == null) return;
+                int totalLines = editor.Document.LineCount;
+                if (lineNumber > totalLines) lineNumber = totalLines;
+                DocumentLine line = editor.Document.GetLineByNumber(lineNumber);
+                int offset = line.Offset + Math.Max(0, Math.Min(columnNumber - 1, line.Length));
+                editor.Focus();
+                editor.CaretOffset = offset;
+                editor.ScrollToLine(lineNumber);
+                editor.Select(line.Offset, line.Length);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"ジャンプ処理エラー: {ex.Message}");
+            }
+        }
+
+        private async void MenuOpenFolder_Click(object sender, RoutedEventArgs e)
+        {
+            App.LogOperation("フォルダを開く");
+            var openFolderDialog = new OpenFolderDialog
+            {
+                Title = "プロジェクトフォルダを開く"
+            };
+            if (openFolderDialog.ShowDialog() == true)
+            {
+                string folderPath = openFolderDialog.FolderName;
+                _currentRootFolderPath = openFolderDialog.FolderName;
+                _currentBveepFilePath = string.Empty;
+                SetupFileSystemWatcher(folderPath);
+
+                var loadingWindow = new LoadingWindow
+                {
+                    Owner = this
+                };
+                loadingWindow.Show();
+                this.IsEnabled = false;
+                Mouse.OverrideCursor = Cursors.Wait;
+                try
+                {
+                    FileSystemNode? rootNode = await ScanDirectoryAsync(folderPath);
+                    LoadFileSystemToTreeView(rootNode);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"フォルダの読み込み中にエラーが発生しました。\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+                finally
+                {
+                    this.IsEnabled = true;
+                    Mouse.OverrideCursor = null;
+                    loadingWindow.Close();
+                }
+            }
+        }
+
+        private void MenuNew_Click(object sender, ExecutedRoutedEventArgs e)
+        {
+            App.LogOperation("新規作成");
+            // ★ 新規作成は「無題」のタブを追加する。今開いているタブはそのまま残す
+            //    （以前は今のタブの中身を消していたため、開いていたファイルが閉じられていた）
+            if (EditorTabControl == null) return;
+
+            var editor = new ICSharpCode.AvalonEdit.TextEditor();
+            InitializeEditor(editor); // 共通初期化（フォント・ハイライト・右クリックメニューなど）
+
+            var tab = new TabItem { Header = "無題", Content = editor };
+            var info = new TabDocumentInfo { Editor = editor, FilePath = null, IsModified = false, FileEncoding = null, TabItem = tab };
+            tab.Tag = info;
+            EditorTabControl.Items.Add(tab);
+            EditorTabControl.SelectedItem = tab; // タブ切替の処理で、文字コード・タイトル・波線などが更新される
+        }
+
+        private void MenuExit_Click(object sender, RoutedEventArgs e)
+        {
+            Close();
+        }
+
+        private void UpdateTitle()
+        {
+            App.LogOperation("タイトル更新");
+            var active = EditorTabControl != null && EditorTabControl.SelectedItem is TabItem ti ? global::BveMapEditor.MainWindow.GetTabInfo(ti) : null;
+            string fileName;
+            bool modified = false;
+            if (active != null)
+            {
+                fileName = string.IsNullOrEmpty(active.FilePath) ? "無題" : Path.GetFileName(active.FilePath);
+                modified = active.IsModified;
+                currentFilePath = active.FilePath;
+            }
+            else
+            {
+                fileName = string.IsNullOrEmpty(currentFilePath) ? "無題" : Path.GetFileName(currentFilePath);
+                modified = isModified;
+            }
+            Title = $"BVE Map Editor - {fileName}{(modified ? " *" : "")}";
+        }
+
+        private void MenuAbout_Click(object sender, RoutedEventArgs e)
+        {
+            App.LogOperation("情報メニューがクリックされました。");
+            var aboutWindow = new AboutWindow
+            {
+                Owner = this
+            };
+            aboutWindow.ShowDialog();
+        }
+
+        private ErrorUnderlineRenderer GetOrCreateRenderer(ICSharpCode.AvalonEdit.TextEditor editor)
+        {
+            if (_underlineRenderers.TryGetValue(editor, out var renderer)) return renderer;
+            renderer = new ErrorUnderlineRenderer(editor);
+            if (!editor.TextArea.TextView.BackgroundRenderers.Contains(renderer))
+            {
+                editor.TextArea.TextView.BackgroundRenderers.Add(renderer);
+            }
+            _underlineRenderers[editor] = renderer;
+            return renderer;
+        }
+
+        /// <summary>
+        /// 選択されたエラー行の情報をクリップボードにコピーする
+        /// </summary>
+        private void ErrorMenuCopy_Click(object sender, RoutedEventArgs e)
+        {
+            if (ErrorListDataGrid.SelectedItem is not ParseError item) return;
+
+            string copyText = $"[{item.Level}] ファイル: {item.FileName} (行:{item.Line}, 列:{item.Column}) - {item.Message}";
+            Clipboard.SetText(copyText);
+            StatusText.Text = "選択したエラー情報をクリップボードにコピーしました。";
+        }
+
+        /// <summary>
+        /// ファイルツリー（TreeView）で該当ファイルのエントリを自動選択する
+        /// </summary>
+        private void ErrorMenuSelectInTree_Click(object sender, RoutedEventArgs e)
+        {
+            if (ErrorListDataGrid.SelectedItem is not ParseError item) return;
+            if (string.IsNullOrEmpty(item.FileName)) return;
+
+            string targetPath = item.FileName;
+            // 相対パスの場合はルートフォルダからの絶対パスに変換
+            if (!Path.IsPathRooted(targetPath) && !string.IsNullOrEmpty(_currentRootFolderPath))
+            {
+                targetPath = Path.Combine(_currentRootFolderPath, targetPath);
+            }
+
+            if (!File.Exists(targetPath))
+            {
+                MessageBox.Show($"対象のファイルが見つかりません:\n{targetPath}", "ファイル未検出", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // FileExplorerPaine.cs 内にある既存のヘルパーメソッドをそのまま呼び出し
+            if (SelectTreeViewItemByPath(FileExplorerTreeView, targetPath))
+            {
+                StatusText.Text = $"ファイルツリーで '{Path.GetFileName(targetPath)}' を選択しました。";
+            }
+            else
+            {
+                MessageBox.Show("現在開いているプロジェクトフォルダ内に、このファイルに対応するツリー項目が見つかりませんでした。", "通知", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+
+        /// <summary>
+        /// OSのエクスプローラーを起動し、該当ファイルが選択された状態で表示する
+        /// </summary>
+        private void ErrorMenuOpenInExplorer_Click(object sender, RoutedEventArgs e)
+        {
+            if (ErrorListDataGrid.SelectedItem is not ParseError item) return;
+            if (string.IsNullOrEmpty(item.FileName)) return;
+
+            string targetPath = item.FileName;
+            if (!Path.IsPathRooted(targetPath) && !string.IsNullOrEmpty(_currentRootFolderPath))
+            {
+                targetPath = Path.Combine(_currentRootFolderPath, targetPath);
+            }
+
+            if (!File.Exists(targetPath))
+            {
+                MessageBox.Show($"対象のファイルが見つかりません:\n{targetPath}", "ファイル未検出", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            try
+            {
+                // /select 引数を使うことで、エクスプローラー上でそのファイルにフォーカスが当たった状態で開ける
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{targetPath}\"",
+                    UseShellExecute = true
+                });
+                StatusText.Text = "エクスプローラーでファイルを表示しました。";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"エクスプローラーを開けませんでした: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        /// <summary>
+        /// 外部のHTMLヘルプファイルをブラウザで開く
+        /// </summary>
+        // ★ エラーのメッセージ → ヘルプの HTML（Help フォルダ）の対応表。上から順に調べる（順番に意味がある）
+        //    例: 「Load系コマンドは、距離程よりも前…」は「距離程」より先に「Load」で load.html にする
+        private static readonly (System.Text.RegularExpressions.Regex Pattern, string Page)[] HelpPageRules =
+        {
+            // ★ V5 で増えた「リストファイル / インクルード先 / 他列車ファイルが大きすぎる」は、それぞれのページへ（メモリ不足の文だけ internal）
+            (new(@"パーサー内部でエラー|意味解析中に予期せぬ例外|ファイルが空です|メモリ不足|リクエストデータが大きすぎる|通信に失敗|時間内.*に終わらなかった"), "internal.html"),
+            (new(@"全角文字"), "fullwidth.html"),
+            (new(@"セミコロン"), "semicolon.html"),
+            (new(@"^(\[[^\]]*\]\s*)?'include'|インクルード"), "include.html"),
+            (new(@"他列車ファイル|トレインキー"), "train.html"),
+            (new(@"SpeedLimit"), "speedlimit.html"),
+            (new(@"CabIlluminance"), "cabilluminance.html"),
+            (new(@"BveEx"), "bveex.html"),
+            (new(@"コマンドの後に丸括弧"), "brackets.html"),   // 例の文に SetGauge が入っているので transition より先
+            (new(@"BeginTransition|SetGauge"), "transition.html"),
+            (new(@"の後にドット '\.' が抜けている|未知のコマンド|Invalid character|その名前 '"), "unknown.html"),
+            (new(@"キー|角括弧"), "key.html"),
+            (new(@"Load|リストファイル|指定されたファイルが見つかりません|ファイルパス"), "load.html"),
+            (new(@"引数"), "arguments.html"),   // 値に distance が入ることがあるので distance より先
+            (new(@"距離程|distance|Cannot convert literal|算術計算|右辺と左辺|数式の計算"), "distance.html"),
+            (new(@"括弧"), "brackets.html"),
+        };
+
+        /// <summary>★ エラーのメッセージから、開くヘルプの HTML の名前を決める（当てはまらなければ default.html）</summary>
+        internal static string GetHelpPageName(string message)
+        {
+            foreach (var (pattern, page) in HelpPageRules)
+            {
+                if (pattern.IsMatch(message)) return page;
+            }
+            return "default.html";
+        }
+
+        private void ErrorMenuSearchHelp_Click(object sender, RoutedEventArgs e)
+        {
+            if (ErrorListDataGrid.SelectedItem is not ParseError item) return;
+
+            // Null安全対策として、あらかじめ string.Empty で確実に非null化しておく
+            string msg = item.Message ?? string.Empty;
+            string fileName = item.FileName ?? string.Empty;
+
+            // 1. エラー内容に応じて開くHTMLファイル名を決定
+            // ★ 対応表（HelpPageRules）を上から順に調べ、最初に当てはまった HTML を開く。当てはまらなければ default.html
+            //    （以前は if の並びで、最初の条件に「キー」が入っていたため、キーのエラーはすべて structure.html になっていた。
+            //     また sound / station / file などの HTML は存在しなかった）
+            string htmlFileName = GetHelpPageName(msg);
+            string helpDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Help");
+            string htmlPath = Path.Combine(helpDir, htmlFileName);
+
+            if (!File.Exists(htmlPath))
+            {
+                htmlPath = Path.Combine(helpDir, "default.html");
+            }
+
+            try
+            {
+                if (File.Exists(htmlPath))
+                {
+                    // 3. 外部HTMLのテンプレートを読み込む
+                    string htmlContent = File.ReadAllText(htmlPath, Encoding.UTF8);
+
+                    // 4. HTML内のプレースホルダー（目印）を実際の値に置換する
+                    htmlContent = htmlContent.Replace("__MSG__", System.Net.WebUtility.HtmlEncode(msg));
+                    htmlContent = htmlContent.Replace("__LINE__", item.Line.ToString());
+                    htmlContent = htmlContent.Replace("__FILE__", System.Net.WebUtility.HtmlEncode(fileName));
+
+                    // 5. 一時ファイルとして書き出してブラウザで開く
+                    string tempHtmlPath = Path.Combine(Path.GetTempPath(), "BveMapEditor_ErrorHelp.html");
+                    File.WriteAllText(tempHtmlPath, htmlContent, Encoding.UTF8);
+
+                    Process.Start(new ProcessStartInfo(tempHtmlPath) { UseShellExecute = true });
+                    StatusText.Text = "外部ヘルプをブラウザで開きました。";
+                }
+                else
+                {
+                    // HTMLファイルがない場合はGoogle検索にフォールバック
+                    string query = $"BVE Map Editor {msg}";
+                    string url = $"https://www.google.com/search?q={Uri.EscapeDataString(query)}";
+                    Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                    StatusText.Text = "Google検索をブラウザで開きました。";
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"ヘルプの表示に失敗しました: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        private void ErrorMenuAskGemini_Click(object sender, RoutedEventArgs e)
+        {
+            if (ErrorListDataGrid.SelectedItem is not ParseError item) return;
+
+            string prompt = $"BVE Map Editorの開発・マップ制作において、以下の構文エラー（警告）が発生しました。\n" +
+                            $"正しい構文の修正方法や原因について教えてください。\n\n" +
+                            $"--- エラー詳細 ---\n" +
+                            $"・ファイル名: {item.FileName}\n" +
+                            $"・発生位置: 行 {item.Line}, 列 {item.Column}\n" +
+                            $"・レベル: {item.Level}\n" +
+                            $"・メッセージ: {item.Message}\n";
+
+            Clipboard.SetText(prompt);
+
+            try
+            {
+                Process.Start(new ProcessStartInfo("https://gemini.google.com/") { UseShellExecute = true });
+                StatusText.Text = "エラー情報をクリップボードにコピーし、Geminiを開きました（Ctrl+Vで貼り付けて質問できます）。";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Geminiを開けませんでした: {ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        /// <summary>
+        /// ErrorListDataGridの右クリックメニューが開かれる直前のイベント
+        /// </summary>
+        private void ErrorListDataGrid_ContextMenuOpening(object sender, System.Windows.Controls.ContextMenuEventArgs e)
+        {
+            // 行が選択されていない場合はメニューを表示しない
+            if (ErrorListDataGrid.SelectedItem == null)
+            {
+                e.Handled = true;
+                return;
+            }
+
+            // 選択されたエラー項目に応じてファイル関連メニューの有効/無効を動的に切り替える
+            if (ErrorListDataGrid.SelectedItem is ParseError item)
+            {
+                bool hasValidFile = false;
+
+                if (!string.IsNullOrEmpty(item.FileName))
+                {
+                    string targetPath = item.FileName;
+                    // 相対パスの場合はルートフォルダからの絶対パスに変換
+                    if (!Path.IsPathRooted(targetPath) && !string.IsNullOrEmpty(_currentRootFolderPath))
+                    {
+                        targetPath = Path.Combine(_currentRootFolderPath, targetPath);
+                    }
+
+                    // ファイルが実際に存在するか確認
+                    hasValidFile = File.Exists(targetPath);
+                }
+
+                // ファイル名がない、またはファイルが存在しない場合はグレーアウトする
+                MenuErrorSelectInTree.IsEnabled = hasValidFile;
+                MenuErrorOpenInExplorer.IsEnabled = hasValidFile;
+
+                // ★ 修正の候補をこのエラーに合わせて作り直す（ErrorFix.cs）
+                FillErrorFixMenu(item);
+            }
+        }
+        private void UpdateEncodingStatus()
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (FileEncodingText == null) return;
+                try
+                {
+                    Encoding? enc = null;
+
+                    // アクティブなタブの情報を取得
+                    var activeInfo = GetTabInfo(EditorTabControl?.SelectedItem as TabItem);
+                    if (activeInfo != null)
+                    {
+                        enc = activeInfo.FileEncoding;
+                    }
+                    else
+                    {
+                        enc = currentFileEncoding;
+                    }
+
+                    if (enc != null)
+                    {
+                        // エンコーディング名を見やすく整形
+                        string encName = enc.WebName.ToLower() switch
+                        {
+                            "utf-8" => (enc is UTF8Encoding utf8 && utf8.GetPreamble().Length > 0) ? "UTF-8 (BOM付)" : "UTF-8",
+                            "shift_jis" or "sjis" or "cp932" => "Shift-JIS",
+                            "utf-16le" or "unicode" => "UTF-16 LE",
+                            "utf-16be" => "UTF-16 BE",
+                            _ => enc.EncodingName
+                        };
+                        FileEncodingText.Text = encName;
+                    }
+                    else
+                    {
+                        // デフォルト（無題タブなど）
+                        FileEncodingText.Text = "UTF-8";
+                    }
+                }
+                catch
+                {
+                    FileEncodingText.Text = string.Empty;
+                }
+            });
+        }
+        // ★ ワーカーへの問い合わせを1度に1つにするための鍵
+        //    （ワーカーは1度に1つの接続しか受け付けないため、重なると接続待ちが時間切れになっていた）
+        private readonly SemaphoreSlim _pipeLock = new(1, 1);
+        // ★ 接続を待つ時間（ミリ秒）。以前は 1000 で、ワーカーの起動直後などに時間切れになっていた
+        private const int PipeConnectTimeoutMs = 5000;
+        // ★ ワーカーの返事を待つ時間の上限（大きなマップでも 2 秒ほどなので、60 秒あれば十分）
+        //    これを超えたらワーカーが固まったとみなして起動し直す（以前は上限がなく、固まるとその後の構文チェックがすべて止まった）
+        private const int PipeResponseTimeoutMs = 60000;
+
+        // ★ ワーカーのプロセスが終了しているか（終了しているときだけ再起動する）
+        private bool IsParserWorkerExited()
+        {
+            try
+            {
+                return _parserWorkerProcess == null || _parserWorkerProcess.HasExited;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        // パイプ通信経由でパースを実行するメソッド
+        // token: 新しい入力などで、このチェックが不要になったら取り消される
+        public async Task<ParseResponse> ParseViaPipeAsync(string routeFilePath, string routeText, Dictionary<string, string> unsavedTexts, CancellationToken token = default)
+        {
+            // ★ 前の問い合わせが終わるまで待つ。待っている間に取り消されたら OperationCanceledException になる（呼び出し側で何もせず終わる）
+            await _pipeLock.WaitAsync(token);
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                return await ParseViaPipeCoreAsync(routeFilePath, routeText, unsavedTexts);
+            }
+            finally
+            {
+                _pipeLock.Release();
+            }
+        }
+
+        private async Task<ParseResponse> ParseViaPipeCoreAsync(string routeFilePath, string routeText, Dictionary<string, string> unsavedTexts)
+        {
+            return await Task.Run(async () =>
+            {
+                // ★ 失敗した理由を覚えておき、最後のエラーメッセージに付ける（原因を調べるため）
+                var failureReasons = new List<string>();
+                for (int retry = 0; retry < 2; retry++)
+                {
+                    try
+                    {
+                        // ★ CurrentUserOnly: 接続先のパイプが「自分と同じユーザー」のものでなければ接続しない
+                        using var clientStream = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                        clientStream.Connect(PipeConnectTimeoutMs);
+
+                        if (!GetNamedPipeServerProcessId(clientStream.SafePipeHandle, out uint serverProcessId))
+                        {
+                            throw new UnauthorizedAccessException("パイプサーバーのプロセスIDを取得できませんでした。");
+                        }
+                        // ★ 接続先が「このエディタが起動したワーカー」かを確かめる（違えばマップの本文を送らない）
+                        int expectedWorkerId = -1;
+                        try { expectedWorkerId = _parserWorkerProcess?.Id ?? -1; } catch { }
+                        if (expectedWorkerId <= 0 || serverProcessId != (uint)expectedWorkerId)
+                        {
+                            throw new UnauthorizedAccessException("パイプの接続先が、このエディタが起動したワーカーではありません。");
+                        }
+
+                        using var writer = new StreamWriter(clientStream, Encoding.UTF8, leaveOpen: true);
+                        using var reader = new StreamReader(clientStream, Encoding.UTF8, leaveOpen: true);
+
+                        // ★ 要求オブジェクトの構築
+                        var request = new BveSemanticAnalyzer.ParseRequest
+                        {
+                            RouteFilePath = routeFilePath,
+                            RouteText = routeText,
+                            UnsavedTexts = unsavedTexts
+                        };
+
+                        string jsonRequest = JsonSerializer.Serialize(request);
+                        writer.WriteLine(jsonRequest);
+                        writer.Flush();
+
+                        // ★ 返事を待つ時間に上限を付ける。時間切れならワーカーが固まったとみなし、起動し直して知らせる
+                        var readTask = reader.ReadLineAsync();
+                        if (await Task.WhenAny(readTask, Task.Delay(PipeResponseTimeoutMs)) != readTask)
+                        {
+                            App.LogOperation("ワーカーの返事が時間内に来なかったため、起動し直します");
+                            RestartParserWorker();
+                            return new ParseResponse
+                            {
+                                Errors = new List<ParseError>
+                                {
+                                    new ParseError
+                                    {
+                                        Level = "エラー",
+                                        Line = 1,
+                                        Column = 1,
+                                        Message = $"構文チェックが時間内（{PipeResponseTimeoutMs / 1000} 秒）に終わらなかったため、ワーカーを起動し直しました。マップを書き換えると、もう一度チェックします。"
+                                    }
+                                }
+                            };
+                        }
+                        string? jsonResponse = await readTask;
+                        if (!string.IsNullOrEmpty(jsonResponse))
+                        {
+                            return JsonSerializer.Deserialize<ParseResponse>(jsonResponse) ?? new ParseResponse();
+                        }
+                        failureReasons.Add($"試行{retry + 1}: ワーカーから空の返事が返りました");
+                    }
+                    catch (Exception ex)
+                    {
+                        failureReasons.Add($"試行{retry + 1}: {ex.GetType().Name}: {ex.Message}");
+                        App.LogOperation($"パイプ通信エラー (試行 {retry + 1}): {ex.Message}");
+                        if (retry == 0)
+                        {
+                            // ★ ワーカーが本当に終了しているときだけ再起動する
+                            //    （以前は時間切れでも、解析中のワーカーを強制終了していた）
+                            if (IsParserWorkerExited())
+                            {
+                                RestartParserWorker();
+                            }
+                            await Task.Delay(500);
+                        }
+                    }
+                }
+
+                return new ParseResponse
+                {
+                    Errors = new List<ParseError>
+                    {
+                        new ParseError
+                        {
+                            Level = "エラー",
+                            Line = 1,
+                            Column = 1,
+                            Message = "マップパーサープロセス（ワーカー）との通信に失敗しました。構文チェックを実行できません。" +
+                                      (failureReasons.Count > 0 ? $"（詳細: {string.Join(" / ", failureReasons)}）" : string.Empty)
+                        }
+                    }
+                };
+            });
+        }
+
+        /// <summary>
+        /// (3) 統合された単一の構文チェック開始メソッド
+        /// </summary>
+        /// <param name="isImmediate">デバウンス（遅延）挟まず即時実行するかどうか</param>
+        private void RunSyntaxCheck(bool isImmediate = false)
+        {
+            if (isLoading || isInitializing) return;
+
+            _syntaxCts?.Cancel();
+            _syntaxCts = new CancellationTokenSource();
+            var token = _syntaxCts.Token;
+
+            Task.Run(async () =>
+            {
+                if (!isImmediate)
+                {
+                    try
+                    {
+                        await Task.Delay(SyntaxDebounceDelay, token).ConfigureAwait(false);
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        return;
+                    }
+                }
+
+                if (token.IsCancellationRequested) return;
+
+                string activeFilePath = string.Empty;
+                string activeText = string.Empty;
+                var unsavedTexts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                ICSharpCode.AvalonEdit.TextEditor? activeEditor = null;
+
+                // GUIスレッドから現在の情報・未保存テキストを一括収集
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    activeEditor = ActiveEditor ?? MapTextEditor;
+                    activeText = activeEditor?.Text ?? string.Empty;
+
+                    var activeInfo = GetTabInfo(EditorTabControl?.SelectedItem as TabItem);
+                    activeFilePath = activeInfo?.FilePath ?? currentFilePath ?? string.Empty;
+
+                    if (EditorTabControl != null)
+                    {
+                        foreach (var item in EditorTabControl.Items)
+                        {
+                            if (item is TabItem ti && GetTabInfo(ti) is TabDocumentInfo info)
+                            {
+                                if (!string.IsNullOrEmpty(info.FilePath) && info.Editor != null)
+                                {
+                                    unsavedTexts[info.FilePath] = info.Editor.Text;
+                                }
+                            }
+                        }
+                    }
+                });
+
+                if (token.IsCancellationRequested) return;
+
+                // ★ 子タブであれば親の対応関係（_childToParentMap）をたどってルートのパスとテキストを取得する
+                string routeFilePath = GetRootFilePath(activeFilePath);
+                string routeText = activeText;
+
+                // ★ (2026-11-15) マップでないタブ（リストファイルの CSV など）は、マップとして調べない
+                //    （以前は CSV をマップとして調べて、ヘッダーなどの誤ったエラーを出していた）
+                //    代わりに、最後に調べたマップをもう一度調べる（タブの CSV の保存前の内容でキーを読むので、CSV を直すとすぐ反映される）
+                if (string.Equals(routeFilePath, activeFilePath, StringComparison.OrdinalIgnoreCase) && IsNonMapText(activeFilePath, activeText))
+                {
+                    string? lastMap = _lastMapRootPath;
+                    if (!string.IsNullOrEmpty(lastMap) && (unsavedTexts.ContainsKey(lastMap) || File.Exists(lastMap)))
+                    {
+                        routeFilePath = lastMap;
+                    }
+                    else
+                    {
+                        // まだマップを1つも調べていない: 何も調べず、エラー一覧と波線を空にする
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            ErrorListDataGrid.ItemsSource = null;
+                            ErrorListDataGrid.ItemsSource = new List<ParseError>();
+                            if (activeEditor != null) GetOrCreateRenderer(activeEditor).SetErrors(new List<ParseError>());
+                        });
+                        return;
+                    }
+                }
+                else if (!string.IsNullOrEmpty(routeFilePath))
+                {
+                    _lastMapRootPath = routeFilePath; // マップを調べたので覚えておく
+                }
+
+                // ルートテキストの決定（未保存辞書にあれば優先、なければファイルから読み込み）
+                if (routeFilePath != activeFilePath && !string.IsNullOrEmpty(routeFilePath))
+                {
+                    if (unsavedTexts.TryGetValue(routeFilePath, out var unsavedRouteText))
+                    {
+                        routeText = unsavedRouteText;
+                    }
+                    else if (File.Exists(routeFilePath))
+                    {
+                        try
+                        {
+                            // ★ (2026-11-15) 開くときと同じように文字コードを判定して読む（以前は UTF-8 決め打ちで、Shift-JIS のマップは日本語が文字化けしていた）
+                            byte[] routeBytes = File.ReadAllBytes(routeFilePath);
+                            routeText = RemoveLeadingBom(DetectEncodingFromSample(routeBytes).GetString(routeBytes));
+                        }
+                        catch { }
+                    }
+                }
+
+                try
+                {
+                    // パイプ経由でルートから解析を実行
+                    // ★ token を渡す: 前のチェックを待っている間に新しい入力があれば、このチェックは取りやめる
+                    ParseResponse response = await ParseViaPipeAsync(routeFilePath, routeText, unsavedTexts, token);
+                    if (token.IsCancellationRequested) return;
+
+                    // 受け取った「子->親」対応関係をローカルに更新・保存
+                    foreach (var kvp in response.ParentMap)
+                    {
+                        _childToParentMap[kvp.Key] = kvp.Value;
+                    }
+
+                    // ★ キーの自動補完用: 受け取ったキーの一覧をルートファイルごとに覚えておく
+                    if (response.KeyLists != null)
+                    {
+                        //    （受け取った辞書は大文字小文字を区別するため、structure['…'] でも引けるように区別しない辞書に入れ直す）
+                        var keyLists = new Dictionary<string, List<string>>(response.KeyLists, StringComparer.OrdinalIgnoreCase);
+                        await Dispatcher.InvokeAsync(() => _keyListsByRoute[routeFilePath ?? string.Empty] = keyLists);
+                    }
+
+                    List<ParseError> allErrors = response.Errors;
+
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        // エラー一覧には全件を表示
+                        ErrorListDataGrid.ItemsSource = null;
+                        ErrorListDataGrid.ItemsSource = allErrors;
+
+                        // 波線にはアクティブなタブ（ファイル）のエラーだけを渡して描画
+                        if (activeEditor != null)
+                        {
+                            string NormalizePath(string p)
+                            {
+                                try { return Path.GetFullPath(p); } catch { return p; }
+                            }
+
+                            var targetErrors = string.IsNullOrEmpty(activeFilePath)
+                                ? allErrors
+                                : allErrors.Where(e =>
+                                {
+                                    // FileName が空のエラーは、ルートファイルのもの
+                                    string owner = string.IsNullOrEmpty(e.FileName) ? routeFilePath : e.FileName;
+                                    return string.Equals(NormalizePath(owner), NormalizePath(activeFilePath), StringComparison.OrdinalIgnoreCase);
+                                }).ToList();
+
+                            // ★ 絞り込んだエラーを波線の描画に渡す（以前は渡していなかったため波線が出なかった）
+                            GetOrCreateRenderer(activeEditor).SetErrors(targetErrors);
+                        }
+                    });
+                }
+                catch (OperationCanceledException)
+                {
+                    // ★ 新しいチェックに置き換わったので、このチェックは何もせず終わる（エラー一覧は新しいチェックが更新する）
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    var exceptionErrors = new List<ParseError>
+                    {
+                        new ParseError { Line = 1, Column = 1, Message = $"構文チェック中にエラーが発生しました: {ex.Message}" }
+                    };
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        ErrorListDataGrid.ItemsSource = exceptionErrors;
+                    });
+                }
+            }, token);
+        }
+    }
+}

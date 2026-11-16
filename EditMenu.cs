@@ -7,6 +7,13 @@ namespace BveMapEditor
 {
     public partial class MainWindow : Window
     {
+        // ★ (2026-11-15) 「編集」メニューを開いたときに、元に戻す・切り取り・コピー・貼り付けを押せるか調べ直す
+        //    （以前は選択や文字が変わったときにしか調べていなかったため、別のソフトでコピーして戻ると「貼り付け」がグレーのままのことがあった）
+        private void EditMenu_SubmenuOpened(object sender, RoutedEventArgs e)
+        {
+            UpdateEditMenuState();
+        }
+
         // 切り取りメニューがクリックされたとき
         private void MenuCut_Click(object sender, RoutedEventArgs e)
         {
@@ -39,26 +46,45 @@ namespace BveMapEditor
             var editor = ActiveEditor;
             editor?.SelectAll();
         }
+        // ★ 開いている検索ウィンドウ（なければ null）。2つ目を開かずに使い回すため
+        private SearchWindow? _searchWindow;
+
         private void MenuSearch_Click(object sender, RoutedEventArgs e)
         {
-            var searchWindow = new SearchWindow(ActiveEditor ?? MapTextEditor, currentSettings)
+            var editor = ActiveEditor ?? MapTextEditor;
+
+            // ★ すでに検索ウィンドウが開いていれば、新しく開かずに前に出す（検索するエディタは今のタブに差し替える）
+            //    （以前は Ctrl+F やメニューを使うたびに検索ウィンドウが増えていた）
+            if (_searchWindow != null && _searchWindow.IsLoaded)
+            {
+                if (_searchWindow.WindowState == WindowState.Minimized) _searchWindow.WindowState = WindowState.Normal;
+                _searchWindow.Activate();
+                _searchWindow.ReuseFor(editor);
+                return;
+            }
+
+            var searchWindow = new SearchWindow(editor, currentSettings)
             {
                 Owner = this
             };
+            searchWindow.Closed += (o, args) => { if (_searchWindow == searchWindow) _searchWindow = null; };
+            _searchWindow = searchWindow;
             searchWindow.Show();
+        }
+        // ★ Ctrl+F（ApplicationCommands.Find）が押されたとき: メニューの「検索」と同じく検索ウィンドウを開く
+        private void MenuSearchCommand_Executed(object sender, System.Windows.Input.ExecutedRoutedEventArgs e)
+        {
+            MenuSearch_Click(sender, e);
         }
         // 「右端で折り返す」メニューのクリック処理
         private void MenuWordWrap_Click(object sender, RoutedEventArgs e)
         {
-            var editor = ActiveEditor ?? MapTextEditor;
-            if (editor == null) return;
+            // メニューのチェック状態を設定に反映し、全部のタブに当てる
+            // ★ (2026-11-15) 以前は今のタブだけ変えていた（SettingsMenu.cs の ApplyViewSettingsToAllEditors）
+            currentSettings.WordWrap = MenuWordWrap.IsChecked;
+            ApplyViewSettingsToAllEditors();
 
-            // メニューのチェック状態をエディタに反映
-            bool isWrapped = MenuWordWrap.IsChecked;
-            editor.WordWrap = isWrapped;
-
-            // 設定を更新して保存
-            currentSettings.WordWrap = isWrapped;
+            // 設定を保存
             currentSettings.Save();
         }
         // 「変更を戻す」メニューのクリック処理

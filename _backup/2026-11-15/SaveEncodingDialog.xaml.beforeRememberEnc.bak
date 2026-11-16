@@ -1,0 +1,34 @@
+<Window x:Class="BveMapEditor.SaveEncodingDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="エンコーディングの選択" MinHeight="220" MinWidth="420" WindowStartupLocation="CenterOwner" ResizeMode="CanResize" SizeToContent="WidthAndHeight">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="ファイルを保存する際のエンコーディングを選択してください。" TextWrapping="Wrap" MaxWidth="560" />
+
+        <StackPanel Grid.Row="1" Margin="0,12,0,12">
+            <RadioButton x:Name="RbKeep" Margin="4">
+                <TextBlock Text="元のエンコーディングを保持" TextWrapping="Wrap" MaxWidth="560" />
+            </RadioButton>
+            <RadioButton x:Name="RbUtf8NoBom" Margin="4">
+                <TextBlock Text="UTF-8 (BOMなし) - 推奨" TextWrapping="Wrap" MaxWidth="560" />
+            </RadioButton>
+            <RadioButton x:Name="RbShiftJis" Margin="4">
+                <TextBlock Text="Shift-JIS (CP932) - 互換性あり" TextWrapping="Wrap" MaxWidth="560" />
+            </RadioButton>
+            <RadioButton x:Name="RbUtf8Bom" Margin="4">
+                <TextBlock Text="UTF-8 (BOMあり) - 注意: BVE5/6 で問題になる可能性があります。BOM付きは避けることを推奨します。" TextWrapping="Wrap" MaxWidth="560" />
+            </RadioButton>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="BtnOk" Width="88" Margin="6" Click="BtnOk_Click">OK</Button>
+            <Button x:Name="BtnCancel" Width="88" Margin="6" Click="BtnCancel_Click">キャンセル</Button>
+        </StackPanel>
+    </Grid>
+</Window>

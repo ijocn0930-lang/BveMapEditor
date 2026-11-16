@@ -22,6 +22,8 @@ namespace BveMapEditor
         public double ExplorerPaneWidth { get; set; } = 230;
         // ★ 追加：自動補完の有効/無効（デフォルトは有効）
         public bool EnableAutoCompletion { get; set; } = true;
+        // ★ キーの自動補完（Structure['…'] などでリストのキーを候補に出す）の有効/無効（デフォルトは有効）
+        public bool EnableKeyCompletion { get; set; } = true;
         // ★ 追加：テーマ設定 ("System", "Light", "Dark")
         public string Theme { get; set; } = "System";
         // ★ 追加：検索・置換関連の設定と履歴
@@ -50,8 +52,16 @@ namespace BveMapEditor
         // キー: 絶対ファイルパス, 値: Encoding.WebName（例: "utf-8", "shift_jis"）
         // ★ 追加：自動復元機能の有効/無効（デフォルトは有効）
         public bool EnableAutoRestore { get; set; } = true;
+        // ★ (2026-11-16) 終了時（前回のタブの自動復元・プロジェクトの保存）にタブごとのカーソルの位置を記録し、開くときに戻す（初期値はオン）
+        //    古い settings.json にはこの項目がないが、そのときはこの初期値（true）になる
+        public bool RememberCaretPosition { get; set; } = true;
+        // ★ (2026-11-16) $変数 にマウスを乗せたら宣言を吹き出しで表示する（初期値はオン。古い settings.json でもオンになる）
+        public bool EnableVariableHover { get; set; } = true;
         public Dictionary<string, string> PerFileEncodingMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        private static readonly string SettingsFilePath = "settings.json"; //jsonの場所
+        // ★ (2026-11-15) アプリのフォルダの settings.json を使う
+        //    （以前は "settings.json" だけで「今のフォルダ」に読み書きしていたため、ファイルのダイアログなどで今のフォルダが変わると、
+        //     終了時の設定が別のフォルダに保存されて次回に反映されない可能性があった。autosave.bveproj・Logs と同じ場所）
+        private static readonly string SettingsFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"); //jsonの場所
 
         // 設定をファイルから読み込む
         public static AppSettings Load()

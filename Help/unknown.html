@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（未知のコマンド）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 未知のコマンド・書き方の間違い</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <ul>
+            <li><b>未知のコマンドまたは存在しない単語です</b> … BVE にないコマンド名です。つづり（例: Structre / Curve.Begn）、. の抜け（例: Structure['a']Put）、名前の間の空白（例: Structure['a'] Put0）を確認してください。</li>
+            <li><b>'X' の後にドット '.' が抜けているか、コマンドの記述形式が不正です</b> … 例: StructureLoad( は Structure.Load( です。</li>
+            <li><b>その名前 '$X' は存在しません</b> … 変数を使う前に $X = …; で値を入れていないか、変数名のつづりが違います（変数は include の順番にも注意）。</li>
+            <li><b>Invalid character</b> … 使えない記号が入っています。</li>
+        </ul>
+        <p>コマンド名の大文字・小文字は区別しません。</p>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>間違い</h3>
+        <div class="code ng">Structre['a'].Put0('0', 0, 25);
+Structure['CrossSig']Put0('0', 0, 1);
+Curve.Begn(300, 0.105);</div>
+        <h3>正しい</h3>
+        <div class="code ok">Structure['a'].Put0('0', 0, 25);
+Structure['CrossSig'].Put0('0', 0, 1);
+Curve.Begin(300, 0.105);</div>
+        <p>コマンド名は、入力中に出る自動補完の候補から選ぶと間違いを防げます。</p>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">右クリック ➔「修正の候補」で、つづりの近いコマンド名・名前（include や名前空間）を最大3つ出します。( ) の中の引数の数が合うコマンドだけを出します（例: 引数3個なら Put0）。. の抜けも直せます。</div>
+    </div>
+</body>
+</html>

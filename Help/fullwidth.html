@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（全角文字）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 全角文字</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <p>コマンド・数値・記号は半角で書きます。全角の英数字・記号（（ ） ； ０〜９ Ａ〜Ｚ など）や全角スペースが入っているとエラーになります。</p>
+        <p>日本語は、<b>' ' で囲んだ文字列の中</b>と、<b># や // の後ろのコメント</b>なら書けます。</p>
+        <p>続いている全角文字は、まとめて1件のエラーになります。</p>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>間違い</h3>
+        <div class="code ng">Curve.Begin（３００，　0.105）；</div>
+        <h3>正しい</h3>
+        <div class="code ok">Curve.Begin(300, 0.105);   # 曲線（コメントの日本語は OK）</div>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">右クリック ➔「修正の候補」で、続いている全角文字をまとめて半角にできます（例: 「（３００）」→「(300)」）。ひらがな・漢字など半角にできない文字が混じっているときは、候補は出ません。同じファイルに何件もあるときは「まとめて直す」も使えます。</div>
+    </div>
+</body>
+</html>

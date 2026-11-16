@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <title>BVE Map Editor - ヘルプ（曲線・カント・勾配）</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif; margin: 30px; background: #f4f5f7; color: #333; line-height: 1.7; }
+        h1 { color: #d9534f; font-size: 22px; border-bottom: 2px solid #d9534f; padding-bottom: 8px; }
+        h2 { font-size: 18px; margin-top: 0; }
+        h3 { font-size: 15px; margin-bottom: 4px; }
+        .box { background: #fff; border: 1px solid #ddd; padding: 20px; border-radius: 6px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .label { font-weight: bold; color: #555; display: inline-block; width: 90px; }
+        .code { font-family: Consolas, 'MS Gothic', monospace; background: #272822; color: #f8f8f2; padding: 10px 14px; border-radius: 4px; white-space: pre; overflow-x: auto; }
+        .ng { border-left: 6px solid #d9534f; }
+        .ok { border-left: 6px solid #5cb85c; }
+        .fix { background: #eef7ee; border: 1px solid #b9dfb9; padding: 10px 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>BVE Map Editor エラー解説: 曲線・カント・勾配（BeginTransition / SetGauge）</h1>
+
+    <div class="box">
+        <p><span class="label">ファイル:</span> __FILE__</p>
+        <p><span class="label">発生位置:</span> 行 __LINE__</p>
+        <p><span class="label">メッセージ:</span> <span style="color: #c0392b; font-weight: bold;">__MSG__</span></p>
+    </div>
+
+    <div class="box">
+        <h2>🔍 原因</h2>
+        <ul>
+            <li><b>'BeginTransition' is required before 'Begin' / 'End'</b> … Curve・Gradient・Track['…'].Cant の Begin / End の前に、緩和区間の始まり BeginTransition がありません。BeginTransition の距離程から Begin（End）の距離程までが緩和区間になります。</li>
+            <li><b>BeginTransition(); を2か所連続して配置できません</b> … BeginTransition の後に Begin / End がないまま、もう一度 BeginTransition を書いています。</li>
+            <li><b>Curve.SetGauge が設定される前にカント付きの Curve 操作が行われています</b> … カントを付ける前に、軌間を Curve.SetGauge（または Curve.Gauge）で設定してください。</li>
+            <li><b>Track['X'].Cant.SetGauge(); が設定される前にカント操作が行われています</b> … 他軌道のカントの前に、Track['X'].Cant.SetGauge（または Track['X'].Gauge）で軌間を設定してください。</li>
+        </ul>
+    </div>
+
+    <div class="box">
+        <h2>🛠️ 直し方</h2>
+        <h3>正しい書き方の例</h3>
+        <div class="code ok">0;
+    Curve.SetGauge(1.067);
+
+1000;
+    Curve.BeginTransition();
+1050;
+    Curve.Begin(400, 0.105);
+1300;
+    Curve.BeginTransition();
+1350;
+    Curve.End();</div>
+        <p>軌間は狭軌なら 1.067、標準軌なら 1.435 です。</p>
+    </div>
+
+    <div class="box">
+        <h2>✨ 修正の候補</h2>
+        <div class="fix">右クリック ➔「修正の候補」で次の直し方を選べます。
+            <ul>
+                <li>BeginTransition がない → ダイアログで距離程を選び、その距離程の行のすぐ下に BeginTransition の行を足す</li>
+                <li>SetGauge がない → エラーの行の上に SetGauge の行を足す（1.067 / 1.435 から選ぶ）</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>

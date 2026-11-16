@@ -75,7 +75,17 @@ namespace BveMapEditor
         // ツリービューの項目を右クリックしたときに、自動でその項目を選択状態にする
         private void TreeViewItem_MouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            if (sender is TreeViewItem item)
+            // ★ (2026-11-15) 右クリックした場所にいちばん近い項目を選ぶ
+            //    （この処理は MainWindow.xaml の ItemContainerStyle で付けているが、それが効くのは一番上の項目だけ。
+            //     以前は sender（＝一番上の項目）を選んでいたため、どの項目を右クリックしても一番上の項目が選ばれていた）
+            DependencyObject? d = e.OriginalSource as DependencyObject;
+            while (d != null && d is not TreeViewItem)
+            {
+                d = (d is Visual || d is System.Windows.Media.Media3D.Visual3D)
+                    ? VisualTreeHelper.GetParent(d)
+                    : LogicalTreeHelper.GetParent(d);
+            }
+            if ((d as TreeViewItem ?? sender as TreeViewItem) is TreeViewItem item)
             {
                 item.IsSelected = true;
                 // フォーカスを当ててコンテキストメニューが正しく対象を認識できるようにする
@@ -143,9 +153,31 @@ namespace BveMapEditor
             string currentName = Path.GetFileName(path);
             string parentDir = Path.GetDirectoryName(path) ?? "";
 
+            // ★ (2026-11-15) exe・dll・sys などのシステムにかかわるファイルは名前を変えさせない（ソフトや Windows が動かなくなるのを防ぐ）
+            if (!isDir && IsProtectedFile(currentName))
+            {
+                MessageBox.Show($"このファイルは名前を変えられません。\n（{Path.GetExtension(currentName)} はプログラムやシステムにかかわるファイルのため）\n\nファイル: {currentName}", "名前の変更", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             // 入力ボックスを表示
             string newName = Microsoft.VisualBasic.Interaction.InputBox("新しい名前を入力してください:", "名前の変更", currentName);
+            newName = newName.Trim(); // ★ (2026-11-15) 前後の空白は取る（Windows と同じ）
             if (string.IsNullOrWhiteSpace(newName) || newName == currentName) return;
+
+            // ★ (2026-11-15) ファイル名に使えない名前は止める
+            //    （以前は「\」や「..」を入れると別のフォルダに移動してしまい、: * ? などでは分かりにくいエラーになっていた）
+            string? nameProblem = GetInvalidFileNameReason(newName);
+            // ★ (2026-11-15) ふつうのファイルを exe・dll などの名前にするのも止める（実行できるファイルを作ってしまわないように）
+            if (nameProblem == null && !isDir && IsProtectedFile(newName))
+            {
+                nameProblem = $"{Path.GetExtension(newName)} はプログラムやシステムにかかわるファイルの拡張子のため使えません。";
+            }
+            if (nameProblem != null)
+            {
+                MessageBox.Show($"この名前は使えません。\n{nameProblem}\n\n入力した名前: {newName}", "名前の変更", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
             string newPath = Path.Combine(parentDir, newName);
 
@@ -163,6 +195,140 @@ namespace BveMapEditor
             catch (Exception ex)
             {
                 MessageBox.Show($"名前の変更に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            // ★ (2026-11-15) 開いているタブのパスとタブ名も新しい名前にする
+            //    （以前はタブが古い名前のままで、上書き保存すると古い名前のファイルがまたできていた）
+            UpdateOpenTabsAfterRename(path, newPath, isDir);
+        }
+
+        // ★ (2026-11-15) システムにかかわるファイルの拡張子（system_extensions_list.md の「A. 止める」）
+        //    名前の変更・この拡張子への変更・エクスプローラーペインの貼り付け・名前を付けて保存で新しく作ることを止める
+        //    ふつうのデータや設定にも使う拡張子（.ini .json .xml .log .bak .dat など）は入れない（BVE のデータや _backup の .bak も止まってしまうため）
+        private static readonly HashSet<string> ProtectedExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // 1. 実行ファイル・プログラム本体
+            ".exe", ".com", ".msi", ".msp", ".msix", ".appx", ".app", ".dmg", ".pkg", ".deb", ".rpm",
+            ".bin", ".elf", ".out", ".scr", ".pif", ".gadget",
+            // 2. システムライブラリ・ドライバ・カーネル関連
+            ".dll", ".sys", ".drv", ".vxd", ".ocx", ".cpl", ".msc", ".so", ".dylib", ".ko", ".kext", ".efi", ".rom",
+            // 3. スクリプト・バッチ・コマンド実行
+            ".bat", ".cmd", ".ps1", ".psm1", ".psd1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
+            ".sh", ".bash", ".zsh", ".csh", ".fish", ".command", ".scpt", ".applescript", ".awk", ".sed",
+            // 4. システム設定（ふつうの設定ファイルに使うものは除く）
+            ".reg", ".inf", ".pol", ".adm", ".admx", ".adml", ".service", ".socket", ".timer", ".htaccess",
+            // 5. システム管理・ショートカット・ダンプ（一時ファイル・ログ・バックアップなどは除く）
+            ".lnk", ".url", ".desktop", ".pf", ".cab", ".msu", ".dmp", ".mdmp", ".evt", ".evtx", ".etl",
+            // 6. ディスクイメージ・仮想マシン・ブート関連
+            ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".vdi", ".qcow2", ".ova", ".ovf", ".wim", ".esd", ".swm", ".ost", ".pst",
+            // 7. セキュリティ・証明書・暗号化関連
+            ".cer", ".crt", ".pem", ".der", ".pfx", ".p12", ".key", ".pub", ".csr", ".crl", ".cat"
+        };
+
+        // ★ (2026-11-15) path（ファイル、またはフォルダの中のすべてのファイル）にシステムにかかわるファイルがあれば、最初に見つかったものを返す
+        private static string? FindProtectedFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path)) return IsProtectedFile(Path.GetFileName(path)) ? path : null;
+                if (Directory.Exists(path))
+                {
+                    foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                    {
+                        if (IsProtectedFile(Path.GetFileName(file))) return file;
+                    }
+                }
+            }
+            catch
+            {
+                // 読めないフォルダがあるときは、ここでは止めない（貼り付けの処理で失敗を知らせる）
+            }
+            return null;
+        }
+
+        // ★ (2026-11-15) システムにかかわるファイルか（拡張子で決める）
+        private static bool IsProtectedFile(string fileName)
+        {
+            return ProtectedExtensions.Contains(Path.GetExtension(fileName.TrimEnd()));
+        }
+
+        /// <summary>
+        /// ★ (2026-11-15) ファイル・フォルダの名前として使えなければ、その理由を返す（使えれば null）
+        /// </summary>
+        private static string? GetInvalidFileNameReason(string name)
+        {
+            if (name == "." || name == "..") return "「.」「..」だけの名前は使えません。";
+            char[] bad = name.Where(c => Array.IndexOf(Path.GetInvalidFileNameChars(), c) >= 0).Distinct().ToArray();
+            if (bad.Length > 0)
+            {
+                string shown = string.Join(" ", bad.Select(c => char.IsControl(c) ? "(制御文字)" : c.ToString()));
+                return $"使えない文字が入っています: {shown}\n（\\ / : * ? \" < > | は使えません）";
+            }
+            if (name.EndsWith('.')) return "名前の最後を「.」にはできません。";
+            // Windows で予約されている名前（CON, NUL, COM1 など。拡張子が付いていても使えない）
+            string stem = name.Split('.')[0].TrimEnd().ToUpperInvariant();
+            string[] reserved = { "CON", "PRN", "AUX", "NUL",
+                "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9" };
+            if (reserved.Contains(stem)) return $"「{stem}」は Windows が使う名前のため使えません。";
+            return null;
+        }
+
+        /// <summary>
+        /// ★ (2026-11-15) 名前を変えたファイル（フォルダなら中のファイルすべて）を開いているタブのパス・タブ名を新しいものにする
+        /// </summary>
+        private void UpdateOpenTabsAfterRename(string oldPath, string newPath, bool isDir)
+        {
+            if (EditorTabControl == null) return;
+            string oldFull, newFull;
+            try
+            {
+                oldFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(oldPath));
+                newFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(newPath));
+            }
+            catch
+            {
+                return;
+            }
+
+            // 古いパスを新しいパスに置き換える（関係ないパスは null）
+            string? Replace(string? p)
+            {
+                if (string.IsNullOrEmpty(p)) return null;
+                string full;
+                try { full = Path.GetFullPath(p); } catch { return null; }
+                if (!isDir)
+                {
+                    return string.Equals(full, oldFull, StringComparison.OrdinalIgnoreCase) ? newFull : null;
+                }
+                string prefix = oldFull + Path.DirectorySeparatorChar;
+                return full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    ? newFull + Path.DirectorySeparatorChar + full.Substring(prefix.Length)
+                    : null;
+            }
+
+            bool changed = false;
+            foreach (var item in EditorTabControl.Items)
+            {
+                if (item is TabItem ti && GetTabInfo(ti) is TabDocumentInfo info)
+                {
+                    string? replaced = Replace(info.FilePath);
+                    if (replaced == null) continue;
+                    info.FilePath = replaced;
+                    ti.Header = Path.GetFileName(replaced);
+                    changed = true;
+                }
+            }
+
+            // 最後に調べたマップの名前が変わったときも追いかける
+            string? lastMap = Replace(_lastMapRootPath);
+            if (lastMap != null) _lastMapRootPath = lastMap;
+
+            if (changed)
+            {
+                UpdateTitle(); // タイトルと currentFilePath も新しい名前にする
+                RunSyntaxCheck();
             }
         }
         private void ExplorerPaneMenuCopy_Click(object sender, RoutedEventArgs e)
@@ -187,6 +353,26 @@ namespace BveMapEditor
 
             string targetDir = Directory.Exists(targetPath) ? targetPath : (Path.GetDirectoryName(targetPath) ?? _currentRootFolderPath);
             if (string.IsNullOrEmpty(targetDir)) return;
+
+            // ★ (2026-11-15) フォルダを、そのフォルダ自身の中（またはさらに奥のフォルダ）に貼り付けるのは止める
+            //    （以前はコピー中に作ったフォルダをまたコピーしてしまい、フォルダが深く入れ子になり続けていた）
+            if (Directory.Exists(_copiedFilePath) && IsSameOrInsideFolder(targetDir, _copiedFilePath))
+            {
+                MessageBox.Show("フォルダを、そのフォルダ自身の中には貼り付けられません。\n別のフォルダを選んでから貼り付けてください。", "貼り付け", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // ★ (2026-11-15) システムにかかわるファイル（exe・dll・bat など）は貼り付け（コピーを作る）できないようにする
+            //    フォルダのときは、中に1つでもあれば貼り付けない
+            string? protectedFile = FindProtectedFile(_copiedFilePath);
+            if (protectedFile != null)
+            {
+                string shown = string.Equals(protectedFile, _copiedFilePath, StringComparison.OrdinalIgnoreCase)
+                    ? Path.GetFileName(protectedFile)
+                    : Path.GetRelativePath(_copiedFilePath, protectedFile);
+                MessageBox.Show($"プログラムやシステムにかかわるファイルは貼り付けられません。\n\nファイル: {shown}", "貼り付け", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
 
             try
             {
@@ -224,6 +410,59 @@ namespace BveMapEditor
             catch (Exception ex)
             {
                 MessageBox.Show($"貼り付けに失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // ★ (2026-11-15) 開くのを禁止するシステムのフォルダ（Windows・Program Files・Program Files (x86)・ProgramData）
+        //    場所は Windows から聞いて決める（C: 以外にインストールされていても効く）
+        private static readonly string[] ForbiddenSystemFolders = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+        }.Where(p => !string.IsNullOrEmpty(p)).ToArray();
+
+        // ★ (2026-11-15) どのドライブでも直下にあれば禁止するフォルダ
+        private static readonly string[] ForbiddenDriveRootFolders = { "$Recycle.Bin", "PerfLogs" };
+
+        /// <summary>
+        /// ★ (2026-11-15) 開くのを禁止するシステムのフォルダ（またはその中）なら true
+        /// （フォルダを開く・.bveep・プロジェクト・ファイルを開く・エクスプローラーペインのツリーで使う）
+        /// </summary>
+        private static bool IsForbiddenSystemPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            string full;
+            try { full = Path.GetFullPath(path); } catch { return false; }
+
+            foreach (var folder in ForbiddenSystemFolders)
+            {
+                if (IsSameOrInsideFolder(full, folder)) return true;
+            }
+            string? root = Path.GetPathRoot(full);
+            if (!string.IsNullOrEmpty(root))
+            {
+                foreach (var name in ForbiddenDriveRootFolders)
+                {
+                    if (IsSameOrInsideFolder(full, Path.Combine(root, name))) return true;
+                }
+            }
+            return false;
+        }
+
+        // ★ (2026-11-15) path が folder と同じか、folder の中（奥も含む）にあれば true
+        private static bool IsSameOrInsideFolder(string path, string folder)
+        {
+            try
+            {
+                string p = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)) + Path.DirectorySeparatorChar;
+                string f = Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)) + Path.DirectorySeparatorChar;
+                return p.StartsWith(f, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return true; // パスが変で判断できないときは、安全のため貼り付けない
             }
         }
 
@@ -274,6 +513,8 @@ namespace BveMapEditor
                 {
                     // 隠しフォルダやシステムフォルダは除外
                     if ((directory.Attributes & FileAttributes.Hidden) != 0) continue;
+                    // ★ (2026-11-15) Windows・Program Files などの禁止するフォルダは出さない（中も読まない）
+                    if (IsForbiddenSystemPath(directory.FullName)) continue;
 
                     try
                     {
@@ -533,24 +774,148 @@ namespace BveMapEditor
         }
 
         // ファイル変更検知時の処理（バックグラウンドスレッドから呼ばれるためDispatcherを使用）
+        // ★ (2026-11-15) ツリーの作り直しを少し待ってまとめるタイマー（貼り付けなどで変更が続けて起きても1回にする）
+        private System.Windows.Threading.DispatcherTimer? _treeRefreshTimer;
+        // ★ (2026-11-15) 待っている間に起きた名前の変更（古いパス → 新しいパス）。開いていたフォルダ・選んでいた項目を新しい名前で戻すため
+        private readonly List<(string OldPath, string NewPath)> _pendingTreeRenames = new();
+        private readonly object _pendingTreeRenamesLock = new();
+
         private void OnFileSystemChanged(object sender, FileSystemEventArgs e)
         {
-            // 連続した変更イベントが短時間に多発するのを防ぐ簡易的なディレイ（オプション）や
-            // UIスレッドへの安全なディスパッチ
-            Dispatcher.Invoke(async () =>
+            // ★ (2026-11-15) 以前は変更のたびにすぐツリーを全部作り直していたため、開いていたフォルダが全部閉じていた
+            //    （サブフォルダの中で名前を変える・Excel が一時ファイルを作るだけでも閉じた）
+            //    → 0.3 秒待ってまとめてから、開いていたフォルダと選んでいた項目を戻して作り直す
+            if (e is RenamedEventArgs re)
             {
-                // 変更を検知したらツリーを再読み込みする
-                if (!string.IsNullOrEmpty(_currentRootFolderPath) && Directory.Exists(_currentRootFolderPath))
+                lock (_pendingTreeRenamesLock) _pendingTreeRenames.Add((re.OldFullPath, re.FullPath));
+            }
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (_treeRefreshTimer == null)
                 {
-                    // 現在の展開状態や選択状態を完全に保持したい場合は高度なマージが必要ですが、
-                    // まずは安全にツリー全体を再スキャンして同期させます
-                    FileSystemNode? rootNode = await ScanDirectoryAsync(_currentRootFolderPath);
-                    if (rootNode != null)
+                    _treeRefreshTimer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background, Dispatcher)
                     {
-                        LoadFileSystemToTreeView(rootNode);
-                    }
+                        Interval = TimeSpan.FromMilliseconds(300)
+                    };
+                    _treeRefreshTimer.Tick += async (s, a) =>
+                    {
+                        _treeRefreshTimer.Stop();
+                        await RefreshTreeKeepingStateAsync();
+                    };
                 }
+                _treeRefreshTimer.Stop();
+                _treeRefreshTimer.Start(); // 続けて変更が来たら待ち直す
             });
+        }
+
+        /// <summary>
+        /// ★ (2026-11-15) ツリーを作り直す。作り直す前に開いていたフォルダ・選んでいた項目・スクロール位置を覚えておき、作り直した後に戻す
+        /// （ファイルの変更を見つけたときと、「再読み込み」メニューで使う）
+        /// </summary>
+        private async Task RefreshTreeKeepingStateAsync()
+        {
+            if (string.IsNullOrEmpty(_currentRootFolderPath) || !Directory.Exists(_currentRootFolderPath)) return;
+
+            // 1. 今の状態を覚える
+            var expanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in FileExplorerTreeView.Items.OfType<TreeViewItem>())
+            {
+                CollectExpandedPaths(item, expanded);
+            }
+            string? selected = GetSelectedPath();
+            var scroller = FindTreeScrollViewer(FileExplorerTreeView);
+            double scrollOffset = scroller?.VerticalOffset ?? 0;
+
+            // 2. 待っている間に名前が変わったものは、新しい名前に置き換える
+            List<(string OldPath, string NewPath)> renames;
+            lock (_pendingTreeRenamesLock)
+            {
+                renames = new List<(string, string)>(_pendingTreeRenames);
+                _pendingTreeRenames.Clear();
+            }
+            foreach (var (oldPath, newPath) in renames)
+            {
+                foreach (var p in expanded.ToList())
+                {
+                    string? moved = ReplacePathPrefix(p, oldPath, newPath);
+                    if (moved != null) { expanded.Remove(p); expanded.Add(moved); }
+                }
+                if (selected != null) selected = ReplacePathPrefix(selected, oldPath, newPath) ?? selected;
+            }
+
+            // 3. 作り直す
+            FileSystemNode? rootNode = await ScanDirectoryAsync(_currentRootFolderPath);
+            if (rootNode == null) return;
+            LoadFileSystemToTreeView(rootNode);
+
+            // 4. 開いていたフォルダ・選んでいた項目を戻す
+            TreeViewItem? selectedItem = null;
+            foreach (var item in FileExplorerTreeView.Items.OfType<TreeViewItem>())
+            {
+                selectedItem = RestoreTreeState(item, expanded, selected) ?? selectedItem;
+            }
+            if (selectedItem != null) selectedItem.IsSelected = true;
+
+            // 5. スクロール位置を戻す（画面ができてから）
+            if (scroller != null)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    FindTreeScrollViewer(FileExplorerTreeView)?.ScrollToVerticalOffset(scrollOffset);
+                }, System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+        }
+
+        // 開いているフォルダのパスを集める
+        private static void CollectExpandedPaths(TreeViewItem item, HashSet<string> expanded)
+        {
+            if (item.IsExpanded && item.Tag is string path) expanded.Add(path);
+            foreach (var child in item.Items.OfType<TreeViewItem>())
+            {
+                CollectExpandedPaths(child, expanded);
+            }
+        }
+
+        // 覚えておいたフォルダを開き直す。選んでいた項目が見つかればそれを返す
+        private static TreeViewItem? RestoreTreeState(TreeViewItem item, HashSet<string> expanded, string? selected)
+        {
+            TreeViewItem? found = null;
+            if (item.Tag is string path)
+            {
+                if (expanded.Contains(path)) item.IsExpanded = true;
+                if (selected != null && string.Equals(path, selected, StringComparison.OrdinalIgnoreCase)) found = item;
+            }
+            foreach (var child in item.Items.OfType<TreeViewItem>())
+            {
+                found = RestoreTreeState(child, expanded, selected) ?? found;
+            }
+            return found;
+        }
+
+        // path が oldPath そのもの、または oldPath の中なら、newPath に置き換えたパスを返す（関係なければ null）
+        private static string? ReplacePathPrefix(string path, string oldPath, string newPath)
+        {
+            if (string.Equals(path, oldPath, StringComparison.OrdinalIgnoreCase)) return newPath;
+            string prefix = Path.TrimEndingDirectorySeparator(oldPath) + Path.DirectorySeparatorChar;
+            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.TrimEndingDirectorySeparator(newPath) + Path.DirectorySeparatorChar + path.Substring(prefix.Length);
+            }
+            return null;
+        }
+
+        // ツリーの中のスクロールバー（ScrollViewer）を探す
+        private static ScrollViewer? FindTreeScrollViewer(DependencyObject parent)
+        {
+            int count = VisualTreeHelper.GetChildrenCount(parent);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child is ScrollViewer sv) return sv;
+                var found = FindTreeScrollViewer(child);
+                if (found != null) return found;
+            }
+            return null;
         }
 
     }

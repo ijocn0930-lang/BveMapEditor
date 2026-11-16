@@ -28,16 +28,73 @@ namespace BveMapEditor
                 // ★ null でない場合のみ適用と保存を行う
                 if (dialog.SelectedFontFamily != null)
                 {
-                    editor.FontFamily = dialog.SelectedFontFamily;
                     currentSettings.FontFamilyName = dialog.SelectedFontFamily.Source;
                 }
-
-                editor.FontSize = dialog.SelectedFontSize;
                 currentSettings.FontSize = dialog.SelectedFontSize;
+
+                // ★ (2026-11-15) 全部のタブに当てる（以前は今のタブだけ変えていた）
+                ApplyViewSettingsToAllEditors();
 
                 // 設定を保存
                 currentSettings.Save();
             }
+        }
+
+        // ===== ★ (2026-11-15) 表示の設定（フォント・右端で折り返す・テーマ）を全部のタブに当てる =====
+        // 以前は今のタブ（ActiveEditor）だけを変えていたため、ほかのタブや新しいタブは前の設定のままだった
+
+        // テーマがダークか（"System" のときは Windows の設定に合わせる）
+        private bool IsDarkTheme()
+        {
+            return currentSettings.Theme switch
+            {
+                "Dark" => true,
+                "Light" => false,
+                _ /* "System" */ => IsSystemDarkMode()
+            };
+        }
+
+        // 1つのエディタに表示の設定を当てる（新しいタブを作るときにも使う）
+        private void ApplyViewSettingsToEditor(ICSharpCode.AvalonEdit.TextEditor? editor)
+        {
+            if (editor == null) return;
+            try
+            {
+                editor.FontFamily = new FontFamily(currentSettings.FontFamilyName);
+            }
+            catch
+            {
+                editor.FontFamily = new FontFamily("Consolas"); // フォントが見つからない場合
+            }
+            editor.FontSize = currentSettings.FontSize > 0 ? currentSettings.FontSize : 14.0;
+            editor.WordWrap = currentSettings.WordWrap;
+            if (IsDarkTheme())
+            {
+                editor.Background = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+                editor.Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220));
+            }
+            else
+            {
+                editor.Background = Brushes.White;
+                editor.Foreground = Brushes.Black;
+            }
+        }
+
+        // 開いている全部のタブ（と最初のエディタ）に表示の設定を当てる
+        private void ApplyViewSettingsToAllEditors()
+        {
+            if (EditorTabControl != null)
+            {
+                foreach (var item in EditorTabControl.Items)
+                {
+                    if (item is TabItem ti && ti.Content is ICSharpCode.AvalonEdit.TextEditor tabEditor)
+                    {
+                        ApplyViewSettingsToEditor(tabEditor);
+                    }
+                }
+            }
+            ApplyViewSettingsToEditor(MapTextEditor);
+            MenuWordWrap?.IsChecked = currentSettings.WordWrap;
         }
         // Ctrl + マウスホイールによるフォントサイズの拡大・縮小（すべてのタブのエディタに一括反映）
         private void MapTextEditor_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
@@ -49,7 +106,30 @@ namespace BveMapEditor
                 var activeEditor = ActiveEditor ?? MapTextEditor;
                 if (activeEditor == null) return;
 
-                double currentSize = activeEditor.FontSize;
+                // ★ マウスの下にある文字を中心に拡大・縮小するため、変更前の位置を覚えておく
+                //    （以前は表示位置を合わせ直していなかったので、一番上を基準に拡大・縮小されていた）
+                var wheelEditor = sender as ICSharpCode.AvalonEdit.TextEditor ?? activeEditor;
+                var textView = wheelEditor.TextArea?.TextView;
+                double oldSize = wheelEditor.FontSize;
+                int anchorLine = 0;          // マウスの下の行番号
+                double offsetInLine = 0;     // その行の上端からマウスまでの距離
+                double mouseY = 0, mouseX = 0, oldHorizontal = 0;
+                if (textView != null && textView.Document != null)
+                {
+                    var mouse = e.GetPosition(textView);
+                    mouseY = Math.Max(0, Math.Min(mouse.Y, textView.ActualHeight));
+                    mouseX = Math.Max(0, Math.Min(mouse.X, textView.ActualWidth));
+                    double visualY = textView.VerticalOffset + mouseY;
+                    var line = textView.GetDocumentLineByVisualTop(visualY);
+                    if (line != null)
+                    {
+                        anchorLine = line.LineNumber;
+                        offsetInLine = visualY - textView.GetVisualTopByDocumentLine(anchorLine);
+                    }
+                    oldHorizontal = textView.HorizontalOffset;
+                }
+
+                double currentSize = oldSize;
                 if (e.Delta > 0)
                 {
                     // 上方向（拡大）: 最大 72 まで
@@ -81,6 +161,38 @@ namespace BveMapEditor
 
                 // 万が一初期の MapTextEditor がタブ外にある場合のフォールバック
                 MapTextEditor?.FontSize = currentSize;
+
+                // ★ (2026-11-16) 変数の吹き出しが出ていれば、その文字の大きさも合わせる（AvalonEditClass.cs の Editor_MouseHover）
+                if (_variableToolTip?.IsOpen == true && _variableToolTip.Content is TextBlock tipText)
+                {
+                    tipText.FontSize = currentSize;
+                }
+
+                // ★ 文字の大きさを変えたあと、覚えておいた行がマウスの下に来るようにスクロールし直す
+                if (textView != null && anchorLine > 0 && oldSize > 0 && currentSize != oldSize)
+                {
+                    try
+                    {
+                        wheelEditor.UpdateLayout(); // 新しい大きさで行の高さを計算し直す
+                        double ratio = currentSize / oldSize;
+                        int lineCount = textView.Document?.LineCount ?? 0;
+                        if (anchorLine <= lineCount)
+                        {
+                            double newTop = textView.GetVisualTopByDocumentLine(anchorLine) + offsetInLine * ratio;
+                            wheelEditor.ScrollToVerticalOffset(Math.Max(0, newTop - mouseY));
+                        }
+                        // 横方向も、マウスの下の文字がずれないように合わせる（折り返し表示のときは横スクロールなし）
+                        if (!wheelEditor.WordWrap)
+                        {
+                            double newHorizontal = (oldHorizontal + mouseX) * ratio - mouseX;
+                            wheelEditor.ScrollToHorizontalOffset(Math.Max(0, newHorizontal));
+                        }
+                    }
+                    catch
+                    {
+                        // 位置合わせに失敗しても拡大・縮小自体はそのまま
+                    }
+                }
 
                 // 設定オブジェクト側も更新して保存
                 currentSettings.FontSize = currentSize;
@@ -123,29 +235,9 @@ namespace BveMapEditor
         // テーマを適用するメインメソッド
         private void ApplyTheme(string themeMode)
         {
-            bool isDark = themeMode switch
-            {
-                "Dark" => true,
-                "Light" => false,
-                _ /* "System" */ => IsSystemDarkMode()
-            };
-
-            var editor = ActiveEditor ?? MapTextEditor;
-            if (editor != null)
-            {
-                if (isDark)
-                {
-                    // ダークテーマの色設定
-                    editor.Background = new SolidColorBrush(Color.FromRgb(30, 30, 30));
-                    editor.Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220));
-                }
-                else
-                {
-                    // ライトテーマの色設定
-                    editor.Background = Brushes.White;
-                    editor.Foreground = Brushes.Black;
-                }
-            }
+            // ★ (2026-11-15) 全部のタブに当てる（色は ApplyViewSettingsToEditor。以前は今のタブだけ変えていた）
+            currentSettings.Theme = themeMode;
+            ApplyViewSettingsToAllEditors();
 
             // メニューのチェック状態を同期
             if (MenuThemeSystem != null) MenuThemeSystem.IsChecked = (themeMode == "System");
@@ -169,26 +261,13 @@ namespace BveMapEditor
         // ★2. 設定をエディタに反映するヘルパーメソッド
         private void ApplySettingsToEditor()
         {
-            var editor = ActiveEditor ?? MapTextEditor;
-            if (editor == null) return;
-
-            try
-            {
-                editor.FontFamily = new FontFamily(currentSettings.FontFamilyName);
-                editor.FontSize = currentSettings.FontSize;
-                editor.WordWrap = currentSettings.WordWrap;
-                MenuWordWrap?.IsChecked = currentSettings.WordWrap;
-            }
-            catch
-            {
-                // フォントが見つからない場合のフォールバック
-                editor.FontFamily = new FontFamily("Consolas");
-                editor.FontSize = 14.0;
-                editor.WordWrap = false;
-            }
+            // ★ (2026-11-15) フォント・右端で折り返す・テーマは全部のタブに当てる（ApplyTheme の中で ApplyViewSettingsToAllEditors を呼ぶ）
             // ★ メニューのチェック状態に設定を反映
             MenuAutoCompletion?.IsChecked = currentSettings.EnableAutoCompletion;
+            MenuKeyCompletion?.IsChecked = currentSettings.EnableKeyCompletion; // ★ キーの自動補完
             MenuAllowOverwriteToggle?.IsChecked = currentSettings.AllowOverwriteToggle;
+            MenuRememberCaret?.IsChecked = currentSettings.RememberCaretPosition; // ★ (2026-11-16) 終了時のカーソル位置を記録する
+            MenuVariableHover?.IsChecked = currentSettings.EnableVariableHover; // ★ (2026-11-16) 変数の宣言を吹き出しで表示する
             // ★ テーマの適用
             ApplyTheme(currentSettings.Theme);
         }
@@ -200,6 +279,34 @@ namespace BveMapEditor
                 currentSettings.Theme = themeKey;
                 ApplyTheme(themeKey);
                 currentSettings.Save(); // 設定を保存
+            }
+        }
+        // ★ 「キーの自動補完を有効にする」のクリック処理（すぐに設定ファイルへ保存）
+        private void MenuKeyCompletion_Click(object sender, RoutedEventArgs e)
+        {
+            if (MenuKeyCompletion != null)
+            {
+                currentSettings.EnableKeyCompletion = MenuKeyCompletion.IsChecked;
+                currentSettings.Save();
+            }
+        }
+        // ★ (2026-11-16) 「終了時のカーソル位置を記録する」のクリック処理（すぐに設定ファイルへ保存）
+        private void MenuRememberCaret_Click(object sender, RoutedEventArgs e)
+        {
+            if (MenuRememberCaret != null)
+            {
+                currentSettings.RememberCaretPosition = MenuRememberCaret.IsChecked;
+                currentSettings.Save();
+            }
+        }
+        // ★ (2026-11-16) 「変数の宣言を吹き出しで表示する」のクリック処理（すぐに設定ファイルへ保存。オフにしたら出ている吹き出しも消す）
+        private void MenuVariableHover_Click(object sender, RoutedEventArgs e)
+        {
+            if (MenuVariableHover != null)
+            {
+                currentSettings.EnableVariableHover = MenuVariableHover.IsChecked;
+                currentSettings.Save();
+                if (!currentSettings.EnableVariableHover && _variableToolTip != null) _variableToolTip.IsOpen = false;
             }
         }
         private void MenuAutoCompletion_Click(object sender, RoutedEventArgs e)

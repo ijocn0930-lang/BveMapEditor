@@ -1,0 +1,407 @@
+using BveMapParserWorker;
+using System.Text.RegularExpressions;
+using System.Windows;
+using System.Windows.Controls;
+
+namespace BveMapEditor
+{
+    // ★ エラー一覧の「修正の候補」（AIを使わない簡易な修正提案）
+    //    エラー一覧の右クリックメニューに候補を出し、選ぶとエディタに直接直しを入れる（Ctrl+Z で戻せる・保存はしない）
+    //    MainWindow.xaml.cs に統合されるファイル
+    public partial class MainWindow : Window
+    {
+        /// <summary>
+        /// 修正の候補1つ分。
+        /// Title: メニューに出す文 / Compute: 行の文字列から「行の何文字目から何文字を消して何を入れるか」を求める（直せなければ null）
+        /// </summary>
+        private sealed record ErrorFixSuggestion(string Title, Func<string, ErrorFix.LineEdit?> Compute);
+
+        /// <summary>
+        /// エラーの内容から、修正の候補を作る（候補がなければ空）
+        /// </summary>
+        private List<ErrorFixSuggestion> GetErrorFixSuggestions(ParseError err)
+        {
+            var list = new List<ErrorFixSuggestion>();
+            string msg = err.Message ?? string.Empty;
+
+            // ★ 段階2: 未知のコマンド → つづりの近いコマンド名（自動補完の辞書から）
+            var unknown = Regex.Match(msg, @"^未知のコマンドまたは存在しない単語です: '([^']+)'");
+            if (unknown.Success)
+            {
+                string bad = unknown.Groups[1].Value;
+                foreach (string good in ErrorFix.FindSimilar(bad, KnownCommandNames.Value))
+                {
+                    list.Add(new ErrorFixSuggestion($"「{bad}」を「{good}」に直す", line => ErrorFix.ReplaceCommandName(line, bad, good)));
+                }
+                return list;
+            }
+
+            // ★ 段階2: リストにないキー → つづりの近いキー（構文チェックで受け取ったキーの一覧から）
+            var keyErr = Regex.Match(msg, @"^(Structure|Sound3D|Sound|Station|Signal) キー '([^']*)' は対応するリストファイルに存在しません");
+            var repeaterErr = Regex.Match(msg, @"^Repeater のストラクチャキー '([^']*)' は");
+            var trainErr = Regex.Match(msg, @"^トレインキー '([^']*)' がロードされていないか");
+            string? kind = null, badKey = null;
+            if (keyErr.Success) { kind = keyErr.Groups[1].Value; badKey = keyErr.Groups[2].Value; }
+            else if (repeaterErr.Success) { kind = "Structure"; badKey = repeaterErr.Groups[1].Value; }
+            else if (trainErr.Success) { kind = "Train"; badKey = trainErr.Groups[1].Value; }
+            if (kind != null && badKey != null)
+            {
+                var keys = GetKeyListForErrorFix(kind);
+                if (keys != null)
+                {
+                    string bk = badKey;
+                    foreach (string good in ErrorFix.FindSimilar(bk, keys))
+                    {
+                        list.Add(new ErrorFixSuggestion($"キー「{bk}」を「{good}」に直す", line => ErrorFix.ReplaceKey(line, err.Column, bk, good)));
+                    }
+                }
+                return list;
+            }
+
+            if (msg.StartsWith("文の終わりにセミコロン", StringComparison.Ordinal))
+            {
+                list.Add(new ErrorFixSuggestion("文の終わりに ; を付ける", ErrorFix.AddSemicolon));
+            }
+            else if (msg.StartsWith("セミコロン ';' が複数連続", StringComparison.Ordinal))
+            {
+                list.Add(new ErrorFixSuggestion("連続した ; を1つにする", line => ErrorFix.RemoveDoubleSemicolon(line, err.Column)));
+            }
+            else if (msg.StartsWith("コマンドの後に丸括弧 '()' がありません", StringComparison.Ordinal))
+            {
+                list.Add(new ErrorFixSuggestion("コマンドの後に () を付ける", ErrorFix.AddParentheses));
+            }
+            else if (msg.Contains("の後にドット '.' が抜けている", StringComparison.Ordinal))
+            {
+                var m = Regex.Match(msg, @"^'([A-Za-z0-9]+)'");
+                if (m.Success)
+                {
+                    string ns = m.Groups[1].Value;
+                    list.Add(new ErrorFixSuggestion($"「{ns}」の後に . を入れる", line => ErrorFix.AddDot(line, ns)));
+                }
+            }
+            else if (msg.Contains("全角文字（'", StringComparison.Ordinal))
+            {
+                int i = msg.IndexOf("全角文字（'", StringComparison.Ordinal) + "全角文字（'".Length;
+                if (i < msg.Length)
+                {
+                    char c = msg[i];
+                    char? half = ErrorFix.ToHalfWidth(c);
+                    if (half.HasValue)
+                    {
+                        char h = half.Value;
+                        list.Add(new ErrorFixSuggestion($"「{ErrorFix.ShowChar(c)}」を「{ErrorFix.ShowChar(h)}」に直す",
+                            line => ErrorFix.ReplaceFullWidth(line, err.Column, c, h)));
+                    }
+                }
+            }
+            return list;
+        }
+
+        // ★ 自動補完の辞書にあるコマンド名（「Structure[''].Put();」→「Structure.Put」）。未知のコマンドの候補に使う
+        private static readonly Lazy<string[]> KnownCommandNames = new(() =>
+            cachedSyntaxes.Select(item => ErrorFix.ToCommandName(item.Text))
+                .Where(name => name != null)
+                .Select(name => name!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray());
+
+        /// <summary>
+        /// ★ キーの一覧を探す。今のタブのファイルからルートファイルをたどる。
+        ///    見つからず、覚えているルートファイルが1つだけならそれを使う
+        /// </summary>
+        private List<string>? GetKeyListForErrorFix(string kind)
+        {
+            var editor = ActiveEditor ?? MapTextEditor;
+            var keys = editor != null ? GetKeyList(editor, kind) : null;
+            if (keys != null && keys.Count > 0) return keys;
+            if (_keyListsByRoute.Count == 1)
+            {
+                var only = _keyListsByRoute.Values.First();
+                if (only.TryGetValue(kind, out var k) && k.Count > 0) return k;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// ★ エラー一覧の右クリックメニューの「修正の候補」を、選んだエラーに合わせて作り直す
+        /// </summary>
+        private void FillErrorFixMenu(ParseError err)
+        {
+            if (MenuErrorFix == null) return;
+            MenuErrorFix.Items.Clear();
+            var suggestions = GetErrorFixSuggestions(err);
+            if (suggestions.Count == 0)
+            {
+                MenuErrorFix.Header = "修正の候補はありません";
+                MenuErrorFix.IsEnabled = false;
+                return;
+            }
+            MenuErrorFix.Header = "修正の候補";
+            MenuErrorFix.IsEnabled = true;
+            foreach (var s in suggestions)
+            {
+                var item = new MenuItem { Header = s.Title };
+                item.Click += (o, e) => ApplyErrorFix(err, s);
+                MenuErrorFix.Items.Add(item);
+            }
+        }
+
+        /// <summary>
+        /// ★ 修正の候補を選んだとき: エラーのファイルを開いて、その行に直しを入れる
+        /// </summary>
+        private async void ApplyErrorFix(ParseError err, ErrorFixSuggestion suggestion)
+        {
+            try
+            {
+                await OpenErrorFileAsync(err); // ダブルクリックと同じように、エラーのファイルのタブを開く
+                var editor = ActiveEditor ?? MapTextEditor;
+                var doc = editor?.Document;
+                if (editor == null || doc == null) return;
+
+                if (err.Line < 1 || err.Line > doc.LineCount)
+                {
+                    MessageBox.Show("エラーの行が見つからないため、自動で直せませんでした。", "修正の候補", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var line = doc.GetLineByNumber(err.Line);
+                string text = doc.GetText(line);
+                var edit = suggestion.Compute(text);
+                if (edit == null)
+                {
+                    MessageBox.Show("この行の内容がエラーのときと変わっているため、自動で直せませんでした。\nもう一度構文チェックの結果を見てから試してください。",
+                        "修正の候補", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                var e2 = edit.Value;
+                doc.Replace(line.Offset + e2.Start, e2.RemoveLength, e2.Insert);
+                editor.Focus();
+                editor.CaretOffset = line.Offset + e2.Start + e2.Insert.Length;
+                editor.ScrollToLine(err.Line);
+                StatusText.Text = $"修正しました: {suggestion.Title}（元に戻すには Ctrl+Z）";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"修正を入れられませんでした: {ex.Message}", "修正の候補", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+
+    /// <summary>
+    /// ★ 修正の候補の中身（行の文字列だけを見て、どこをどう直すかを求める）
+    ///    エディタに関係しない部分だけをまとめているので、単独で試験できる
+    /// </summary>
+    public static class ErrorFix
+    {
+        /// <summary>行の中の直し方: Start 文字目から RemoveLength 文字を消して Insert を入れる（Start は 0 から数える）</summary>
+        public readonly record struct LineEdit(int Start, int RemoveLength, string Insert);
+
+        // 引用符の中（'…' / "…"）を同じ長さの空白に置き換える（引用符の中の ; や # を数えないため）
+        private static string MaskQuoted(string line) =>
+            Regex.Replace(line, @"'[^']*'|""[^""]*""", m => new string(' ', m.Length));
+
+        // コメント（# または //）が始まる位置。なければ行の長さ
+        private static int CodeEnd(string line)
+        {
+            string masked = MaskQuoted(line);
+            int end = masked.Length;
+            int hash = masked.IndexOf('#');
+            int slash = masked.IndexOf("//", StringComparison.Ordinal);
+            if (hash >= 0) end = Math.Min(end, hash);
+            if (slash >= 0) end = Math.Min(end, slash);
+            return end;
+        }
+
+        /// <summary>; 抜け: 行のコード部分（コメントの手前）の最後に ; を入れる</summary>
+        public static LineEdit? AddSemicolon(string line)
+        {
+            int end = CodeEnd(line);
+            int pos = end;
+            while (pos > 0 && char.IsWhiteSpace(line[pos - 1])) pos--;
+            if (pos == 0) return null;            // コードがない
+            if (line[pos - 1] == ';') return null; // すでに ; がある
+            return new LineEdit(pos, 0, ";");
+        }
+
+        /// <summary>; の連続: ;; や ; ; の後ろの ; を消して1つにする（column: エラーの列。1から数える）</summary>
+        public static LineEdit? RemoveDoubleSemicolon(string line, int column)
+        {
+            string masked = MaskQuoted(line);
+            var matches = Regex.Matches(masked, @";(\s*;)+");
+            if (matches.Count == 0) return null;
+            Match target = matches[0];
+            int col0 = column - 1;
+            foreach (Match m in matches)
+            {
+                if (col0 >= m.Index && col0 < m.Index + m.Length) { target = m; break; }
+            }
+            return new LineEdit(target.Index + 1, target.Length - 1, string.Empty);
+        }
+
+        // 「名前空間[キー].メソッド」の形で、後ろに ( がないもの（例: Track['A'].Cant.SetGauge）
+        private static readonly Regex NoParenCommandRegex = new(
+            @"\b[A-Za-z_][A-Za-z0-9_]*(\s*\[[^\]]*\])?(\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+(?=\s*(;|$))",
+            RegexOptions.Compiled);
+
+        /// <summary>() 抜け: コマンドの最後の名前の後ろに () を入れる</summary>
+        public static LineEdit? AddParentheses(string line)
+        {
+            string code = line.Substring(0, CodeEnd(line));
+            Match? last = null;
+            foreach (Match m in NoParenCommandRegex.Matches(code)) last = m;
+            if (last == null) return null;
+            return new LineEdit(last.Index + last.Length, 0, "()");
+        }
+
+        /// <summary>. 抜け: 「StructureLoad(」のような所の名前空間の後ろに . を入れる</summary>
+        public static LineEdit? AddDot(string line, string ns)
+        {
+            string code = MaskQuoted(line.Substring(0, CodeEnd(line)));
+            var m = Regex.Match(code, $@"\b{Regex.Escape(ns)}(?=[A-Za-z]+\s*\()", RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+            return new LineEdit(m.Index + m.Length, 0, ".");
+        }
+
+        /// <summary>全角文字: エラーの列にある全角文字（なければ行の最初のもの。引用符の中は除く）を半角にする</summary>
+        public static LineEdit? ReplaceFullWidth(string line, int column, char fullWidth, char halfWidth)
+        {
+            string masked = MaskQuoted(line);
+            int col0 = column - 1;
+            int index = (col0 >= 0 && col0 < masked.Length && masked[col0] == fullWidth) ? col0 : masked.IndexOf(fullWidth);
+            if (index < 0) return null;
+            return new LineEdit(index, 1, halfWidth.ToString());
+        }
+
+        /// <summary>全角文字を半角にする（全角英数・記号と全角スペースだけ。対応する半角がなければ null）</summary>
+        public static char? ToHalfWidth(char c)
+        {
+            if (c == '　') return ' ';
+            if (c >= '！' && c <= '～') return (char)(c - 0xFEE0);
+            return null;
+        }
+
+        #region 段階2: つづりの近い名前
+        /// <summary>自動補完の辞書の文（「Structure[''].Put();」）からコマンド名（「Structure.Put」）を取り出す。. がなければ null</summary>
+        public static string? ToCommandName(string syntax)
+        {
+            int paren = syntax.IndexOf('(');
+            string s = paren >= 0 ? syntax.Substring(0, paren) : syntax;
+            s = Regex.Replace(s, @"\[[^\]]*\]", string.Empty).Trim().TrimEnd(';').Trim();
+            return s.Contains('.') ? s : null;
+        }
+
+        /// <summary>
+        /// 2つの文字のつづりの違いの数（1文字の追加・削除・置き換え・隣どうしの入れ替えを1と数える。大文字小文字は区別しない）
+        /// </summary>
+        public static int EditDistance(string a, string b)
+        {
+            a = a.ToLowerInvariant();
+            b = b.ToLowerInvariant();
+            var d = new int[a.Length + 1, b.Length + 1];
+            for (int i = 0; i <= a.Length; i++) d[i, 0] = i;
+            for (int j = 0; j <= b.Length; j++) d[0, j] = j;
+            for (int i = 1; i <= a.Length; i++)
+            {
+                for (int j = 1; j <= b.Length; j++)
+                {
+                    int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                    d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
+                    if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1])
+                        d[i, j] = Math.Min(d[i, j], d[i - 2, j - 2] + 1);
+                }
+            }
+            return d[a.Length, b.Length];
+        }
+
+        /// <summary>
+        /// つづりの近い名前を、近い順に最大 max 個返す。
+        /// 違ってよい数は、名前の長さが 4 文字以下なら 1、10 文字以下なら 2、それより長ければ 3
+        /// </summary>
+        public static List<string> FindSimilar(string target, IEnumerable<string> candidates, int max = 3)
+        {
+            if (string.IsNullOrEmpty(target)) return new List<string>();
+            int limit = target.Length <= 4 ? 1 : target.Length <= 10 ? 2 : 3;
+            return candidates
+                .Where(c => !string.IsNullOrEmpty(c) && !string.Equals(c, target, StringComparison.OrdinalIgnoreCase)
+                            && Math.Abs(c.Length - target.Length) <= limit)
+                .Select(c => (Name: c, Dist: EditDistance(target, c)))
+                .Where(x => x.Dist <= limit)
+                .OrderBy(x => x.Dist).ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .Take(max)
+                .Select(x => x.Name)
+                .ToList();
+        }
+
+        /// <summary>
+        /// コマンド名を直す。「Structre['a'].Put」のように間にキーがあってもよい。
+        /// . で区切った部分ごとに比べ、違う部分だけを書き換える（区切りの数が違うときは直せない）
+        /// </summary>
+        public static LineEdit? ReplaceCommandName(string line, string badName, string goodName)
+        {
+            string[] bad = badName.Split('.');
+            string[] good = goodName.Split('.');
+            if (bad.Length != good.Length) return null;
+
+            // 例: \b(Structre)(\s*\[[^\]]*\])?\s*\.\s*(Put)\b
+            var pattern = new System.Text.StringBuilder(@"\b");
+            for (int i = 0; i < bad.Length; i++)
+            {
+                if (i > 0) pattern.Append(@"\s*\.\s*");
+                pattern.Append('(').Append(Regex.Escape(bad[i])).Append(')');
+                if (i == 0) pattern.Append(@"(?:\s*\[[^\]]*\])?");
+            }
+            pattern.Append(@"\b");
+            // 引用符の中（キーなど）は空白にしてから探す（[ ] は残るので、キー入りの形も見つかる）
+            string code = MaskQuoted(line.Substring(0, CodeEnd(line)));
+            var m = Regex.Match(code, pattern.ToString(), RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+
+            // 違う部分のうち、最初の部分の先頭から最後の部分の終わりまでを書き換える
+            int first = -1, last = -1;
+            for (int i = 0; i < bad.Length; i++)
+            {
+                if (!string.Equals(bad[i], good[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    if (first < 0) first = i;
+                    last = i;
+                }
+            }
+            if (first < 0) return null;
+            int start = m.Groups[first + 1].Index;
+            int end = m.Groups[last + 1].Index + m.Groups[last + 1].Length;
+            string span = line.Substring(start, end - start);
+            for (int i = last; i >= first; i--)
+            {
+                var g = m.Groups[i + 1];
+                int rel = g.Index - start;
+                span = span.Remove(rel, g.Length).Insert(rel, good[i]);
+            }
+            return new LineEdit(start, end - start, span);
+        }
+
+        /// <summary>
+        /// キーを直す: 行の中の 'badKey'（または "badKey"）を探し、中身を goodKey にする。
+        /// エラーの列より後ろで最初に見つかったもの（なければ行の最初のもの）
+        /// </summary>
+        public static LineEdit? ReplaceKey(string line, int column, string badKey, string goodKey)
+        {
+            var matches = Regex.Matches(line, $@"(['""]){Regex.Escape(badKey)}\1");
+            if (matches.Count == 0) return null;
+            Match target = matches[0];
+            foreach (Match m in matches)
+            {
+                if (m.Index >= column - 2) { target = m; break; }
+            }
+            return new LineEdit(target.Index + 1, badKey.Length, goodKey);
+        }
+        #endregion
+
+        /// <summary>メニューに出すときの文字の見せ方（空白は言葉で書く）</summary>
+        public static string ShowChar(char c) => c switch
+        {
+            '　' => "全角スペース",
+            ' ' => "半角スペース",
+            _ => c.ToString()
+        };
+    }
+}

@@ -37,21 +37,8 @@ namespace BveMapEditor
         private void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
             App.LogOperation("ウィンドウクローズ");
-            // ★ 追加：開いたままの子ウィンドウ（SearchWindowなど）がないかチェックする
-            foreach (Window window in this.OwnedWindows)
-            {
-                if (window is SearchWindow)
-                {
-                    MessageBox.Show(this, "別のウィンドウを閉じられていません。別ウィンドウを閉じてからやり直してください。", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
-
-                    // 必要であれば、開きっぱなしのウィンドウを手前にアクティブにする
-                    window.Activate();
-
-                    e.Cancel = true; // 終了をキャンセル
-                    App.LogOperation("クローズキャンセル");
-                    return;
-                }
-            }
+            // ★ (2026-11-15) 以前は検索ウィンドウが開いていると「別のウィンドウを閉じられていません」と出して終了を止めていた
+            //    → 止めずに未保存の確認へ進み、終了するときに検索ウィンドウも閉じる（一番下）
             // タブごとの未保存チェック
             var modifiedTabs = new System.Collections.Generic.List<TabDocumentInfo>();
             if (EditorTabControl != null)
@@ -95,6 +82,15 @@ namespace BveMapEditor
                     }
                 }
                 // No の場合は保存せずに終了する
+            }
+
+            // ★ (2026-11-15) 終了が決まったので、開いている検索ウィンドウを閉じる（検索の履歴は検索ウィンドウを閉じるときに保存される）
+            foreach (Window window in this.OwnedWindows.Cast<Window>().ToList())
+            {
+                if (window is SearchWindow)
+                {
+                    try { window.Close(); } catch { }
+                }
             }
             _fileSystemWatcher?.Dispose();
         }

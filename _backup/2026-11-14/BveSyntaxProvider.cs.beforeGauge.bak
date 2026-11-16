@@ -1,0 +1,178 @@
+﻿using System.Windows;
+using System.Windows.Controls;
+
+
+namespace BveMapEditor
+{
+    internal class BveSyntaxProvider
+    {
+        public static IEnumerable<BveCompletionData> GetAllSyntaxes()
+        {
+            return new[]
+            {
+                                // ヘッダー
+                new BveCompletionData("BveTs Map 2.02", "ヘッダーを挿入します。"),
+                // インクルード
+                new BveCompletionData("Include 'example.txt';", "別のMapファイルを読み込みます。ファイルパスを''の中で入力してください。"),
+
+                // トラック・軌道関連
+                new BveCompletionData("Track[''].Cant.SetGauge();", "他軌道の軌間（レールの幅）を設定します"),
+                new BveCompletionData("Track[''].Cant.SetCenter();", "他軌道のカントの回転中心を設定します"),
+                new BveCompletionData("Track[''].Cant.SetFunction();", new TextBlock
+                {
+                Text = "他軌道のカント逓減関数を設定します。\n"+
+                        "0:サイン半波長逓減\n"+
+                        "1:直線逓減",
+                TextWrapping = TextWrapping.Wrap
+                }),
+                new BveCompletionData("Track[''].Position();", "他軌道の位置を調整します"),
+                new BveCompletionData("Track[''].X.Interpolate();", "他軌道のX位置を調整します"),
+                new BveCompletionData("Track[''].Y.Interpolate();", "他軌道のY位置を調整します"),
+                new BveCompletionData("Track[''].Cant.Begin();", "他軌道のカントを開始します"),
+                new BveCompletionData("Track[''].Cant.BeginTransition();", "他軌道のカントを逓減します"),
+                new BveCompletionData("Track[''].Cant.End();", "他軌道のカントを終了します"),
+                new BveCompletionData("Track[''].Cant.Interpolate();", "他軌道のカントを調整します"),
+                new BveCompletionData("Track[''].Cant();", "他軌道のカントを設定します（非推奨）"),
+                new BveCompletionData("Curve.SetGauge();", "自軌道の軌間を設定します。カント計算に必要です。"),
+                new BveCompletionData("Curve.Gauge();", "自軌道の軌間を設定します。カント計算に必要です。"),
+                new BveCompletionData("Curve.SetFunction();", new TextBlock
+                {
+                Text = "自軌道のカント逓減関数を設定します。\n"+
+                        "0:サイン半波長逓減\n"+
+                        "1:直線逓減",
+                TextWrapping = TextWrapping.Wrap
+                }),
+                new BveCompletionData("Curve.SetCenter();", "自軌道のカント回転中心を設定します。"),
+                new BveCompletionData("Curve.BeginTransition();", "自軌道の曲線の逓減を開始します。"),
+                new BveCompletionData("Curve.Begin();", "自軌道の曲線を開始します。"),
+                new BveCompletionData("Curve.End();", "自軌道の曲線を終了します。"),
+                new BveCompletionData("Curve.Interpolate();", "自軌道の半径とカントを設定します。前後のInterploateが必要です。"),
+                new BveCompletionData("Curve.Change();", "自軌道の曲線を設定します。Curve.begin();と同じです。"),
+                new BveCompletionData("Curve.BeginCircular();", "自軌道の曲線を開始します。Curve.Begin();と同じです。"),
+
+                //こう配
+                new BveCompletionData("Gradient.BeginTransition();", "自軌道の縦曲線を開始します。"),
+                new BveCompletionData("Gradient.Begin();", "自軌道の縦曲線を終了し、こう配を開始します。"),
+                new BveCompletionData("Gradient.End();", "自軌道の縦曲線を終了し、こう配を終了します。"),
+                new BveCompletionData("Gradient.Interpolate();", "自軌道のこう配を設定します。前後のInterpolate();が必要です。"),
+                new BveCompletionData("Gradient.BeginConst();", "自軌道のこう配を開始します。Gradient.Begin();と同じです。"),
+
+
+                // ストラクチャ・景観関連
+                new BveCompletionData("Structure.Load();", "ストラクチャファイルを読み込みます"),
+                new BveCompletionData("Structure[''].Put();", "ストラクチャを配置します"),
+                new BveCompletionData("Structure[''].Put0();", "ストラクチャを配置します"),
+                new BveCompletionData("Structure[''].PutBetween();", "ストラクチャを軌道から軌道まで変形します"),
+                new BveCompletionData("Repeater[''].Begin();", "ストラクチャを配置します"),
+                new BveCompletionData("Repeater[''].Begin0();", "ストラクチャを配置します"),
+                new BveCompletionData("Repeater[''].End();", "ストラクチャを配置します"),
+
+
+                
+                // 背景関連
+                new BveCompletionData("Background.Change();", "背景を変更します"),
+                
+                // 駅・信号関連
+                new BveCompletionData("Station[''].Put();", "駅を定義します"),
+                new BveCompletionData("Station.Load();", "停車場リストファイルを読み込みます"),
+                new BveCompletionData("Signal.Load();", "信号ファイルを読み込みます"),
+                new BveCompletionData("Signal[''].Put();", "信号現示を定義します"),
+                new BveCompletionData("SpeedLimit.Begin();", "速度制限を開始します"),
+                new BveCompletionData("SpeedLimit.End();", "速度制限を開始します"),
+                new BveCompletionData("Section.SetSpeedLimit();", "信号現示速度を定義します"),
+                new BveCompletionData("Signal.SpeedLimit();", "信号現示速度を定義します"),
+                new BveCompletionData("Beacon.Put();", "地上子の送信イベントを設定します。"),
+                new BveCompletionData("Section.Begin();","閉塞を設定します"),
+                new BveCompletionData("Section.BeginNew();","閉塞を設定します"),
+                // 先行列車/他列車
+                new BveCompletionData("PreTrain.Pass();", "先行列車が通過する時刻"),
+                new BveCompletionData("Train.Add();", "他列車を追加します"),
+                new BveCompletionData("Train[''].Load();", "他列車を追加します"),
+                new BveCompletionData("Train[''].Enable();", "自列車が距離程を通過し、かつ時間になったときに他列車の動作を有効"),
+                new BveCompletionData("Train[''].Stop();", "他列車を距離程に停車させます"),
+
+
+                                //光源
+                new BveCompletionData("Light.Ambient();","アンビエント色を設定します"),
+                new BveCompletionData("Light.Diffuse();","ディフューズ色を設定します"),
+                new BveCompletionData("Light.Direction();","光源の位置を設定します"),
+
+                                //フォグ
+                new BveCompletionData("Fog.Interpolate();","フォグを設定します"),
+                new BveCompletionData("Fog.Set();","フォグを設定します"),
+
+
+                                //描画距離
+                new BveCompletionData("DrawDistance.Change();","描画距離を設定します"),
+
+
+                                //運転台
+                new BveCompletionData("CabIlluminance.Interpolate();","運転台の明るさを設定します"),
+                new BveCompletionData("CabIlluminance.Set();","運転台の明るさを設定します"),
+
+                                //軌道変位
+                new BveCompletionData("Irregularity.Change();","軌道変位を設定します"),
+
+                                //粘着特性
+                new BveCompletionData("Adhesion.Change();","粘着特性を設定します"),
+
+                                //音源
+                new BveCompletionData("Sound3D.Load();","Sound3Dファイルをロードします"),
+                new BveCompletionData("Sound3D[''].Put();","サウンドをループして鳴らす位置を設定します"),
+                new BveCompletionData("Sound.Load();","サウンドファイルをロードします。"),
+                new BveCompletionData("Sound[''].Play();","サウンドを鳴らす距離程を設定します"),
+
+
+                //走行音
+                new BveCompletionData("RollingNoise.Change();","フランジ音を設定します"),
+
+
+                //分岐通過音
+                new BveCompletionData("JointNoise.Play();","フランジ音を設定します"),
+
+                //フランジ音
+                new BveCompletionData("FlangeNoise.Change();","フランジ音を設定します"),
+
+                                //レガシー構文（非推奨）
+                new BveCompletionData("Legacy.Curve();","レガシー構文です。曲線を設定します"),
+                new BveCompletionData("Legacy.Fog();","レガシー構文です。フォグを設定します"),
+                new BveCompletionData("Legacy.Pitch();","レガシー構文です。こう配を設定します")
+
+                // 必要に応じてここに追加していくことができます！
+            };
+        }
+        // ★ 追加：パーサー用に、登録されている有効なコマンド名のセットを自動抽出するメソッド
+        public static HashSet<string> GetValidCommands()
+        {
+            var validCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var syntax in GetAllSyntaxes())
+            {
+                // ※もし BveCompletionData のテキストプロパティ名が "Text" ではない場合は、
+                //   実際のプロパティ名（例: Name や DisplayText など）に書き換えてください。
+                string text = syntax.Text;
+                if (string.IsNullOrEmpty(text)) continue;
+
+                // ヘッダーの特殊ケース
+                if (text.StartsWith("BveTs Map", StringComparison.OrdinalIgnoreCase))
+                {
+                    validCommands.Add("BveTs Map");
+                    continue;
+                }
+
+                // 最初の (、[、スペース、または ; が現れるまでの部分をコマンド名として抽出する
+                // 例: "Include 'example.txt';" -> "Include"
+                //     "Station.Load('st.csv');" -> "Station.Load"
+                int index = text.IndexOfAny(['(', '[', ' ', ';']);
+                string commandName = index >= 0 ? text.Substring(0, index) : text;
+
+                if (!string.IsNullOrEmpty(commandName))
+                {
+                    validCommands.Add(commandName);
+                }
+            }
+
+            return validCommands;
+        }
+    }
+}

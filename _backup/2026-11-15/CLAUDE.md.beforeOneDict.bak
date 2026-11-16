@@ -1,0 +1,83 @@
+# BveMapEditor / BveMapParserWorker (WPF / C#)
+
+## 絶対に守ること
+- 作業は1つずつ小さく進める。変更したら、ユーザーがビルドと動作確認をしてから次へ進む
+- 勝手にビルドしない もしコマンドの実行にビルドが必要な場合は「ユーザーが承認する」まで勝手に実行しない
+- ユーザーは非エンジニア。変更箇所は「どのファイルの、どの部分か」を分かりやすく示す
+- BveMapEditor / BveMapParserWorkerのプロジェクトフォルダ外は書き換えをしないこと。プロジェクトフォルダ外での書き換えが必要ならユーザーからの承認を待つこと
+- 作業(ユーザーが動作確認するまで)が終わったらREADME.mdとPlan.mdを更新する
+- この時にPlan.mdに変更がないか、全てを読むこと
+- 全ての作業が終わったらリリース内容を書く(RELEASE.md)
+- 破壊的変更を行う前にバックアップしてください　途中でエラーになったときに壊してしまうのを防ぐ
+- 作ったファイルとフォルダは消せません。誤って消してしまわないように管理者権限が必要なためです。成果物の削除や誤って作った場合はユーザーにお願いしてください
+- CLAUDE.md 構成は追加したら追記する
+
+# BveMapEditor
+
+## 構成
+
+### ファイル
+- App.xaml / cs クラッシュログ作成、Bveepから起動したとき(カレントディレクトリが変わってxshdを見失うのを防ぐ処理があります)など
+- AppSetting.cs アプリ設定の保存
+- AssemblyInfo.cs アプリケーションのプロパティ属性
+- AvalonEditClass.cs MainWindow.xaml.csに統合されるファイル、AvalonEditに関連するクラスファイル
+- BveCompletionData.cs 自動補完クラス
+- Bveep.cs エクスプローラーペイン拡張子クラス
+- BveMap.xshd ハイライト
+- BveSyntaxProvider.cs 自動補完辞書
+- CurrentLineHigtlightRender.cs 現在行強調
+- debugmenu.cs Bve5等を開くメニュー MainWindow.xaml.csに統合されるファイル
+- DetailSettings.xaml / cs 詳細設定　関連付けや起動パスなど
+- EditMenu.cs 編集メニュークラス　MainWindow.xaml.csに統合されるファイル
+- ErrorFix.cs MainWindow.xaml.csに統合されるファイル エラー一覧の「修正の候補」（AIを使わない簡易な修正提案）
+- ErrorUnderlineRenderer.cs エラーの波線描画
+- FileExplorerPaine.cs MainWindow.xaml.csに統合されるファイル エクスプローラーペイン関連　フォルダを開いたら読む
+- FileLoadingWindow.xaml / cs ファイルを読むときに表示
+- FileSystemNode.cs ファイルシステムノード
+- FontSettingDialog.xaml / cs フォント設定
+- GlobalSuppressions.cs 警告を抑制します
+- LICENSE.txt ライセンス
+- LoadingWindow.xaml / cs フォルダーを読むときに表示
+- MainWindow.xaml / cs メインウィンドウ
+- map.txt テストマップファイル 
+- MapHiahlighter.cs ハイライトを設定
+- MenuExplorer.cs エクスプローラーペインメニュー
+- OnClosing.cs アプリを閉じる処理
+- ProjectFile.cs プロジェクトファイルを読むと保存
+- SaveEncodingDiag,xaml / cs 保存時のエンコード確認
+- SearchWindow.xaml / cs 文字検索と置換
+- SettingMenu.cs MainWindow.xaml.csに統合されるファイル 設定メニュー
+- SiteLink.cs MainWindow.xaml.csに統合されるファイル サイトへのリンクメニュー
+- TextFileManager.cs MainWindow.xaml.csに統合されるファイル ファイル開くと保存
+
+### フォルダ
+- Help エラー一覧からHTMLを開く
+- Maps サンプルシナリオが入ってます
+- 新しいフォルダー　無視でいい
+- _backup 修正前のバックアップ（日付ごと）。ビルド対象にならないよう拡張子は .bak
+
+
+# BveMapParserWorker
+
+## 構成
+
+### ファイル
+- BveCompletionData.cs 自動補完クラス
+- BveLexer.cs トークン処理
+- BveParser.cs パーサー
+- BveSemanticAnalyzer.cs 構文検知
+- BveSemanticCommandRules.cs 引数の数辞書
+- BveSyntaxProvider.cs 自動補完辞書
+- （BveCommandRules.cs / CheckCommandArguments.cs / CheckCommandSyntax.cs / CommandRules.cs は使っていなかったため、2026-11-15 にユーザーが削除済み）
+- MapParser.cs 以前のパーサー　使用するのでそのまま
+- Program.cs --workerの引数を見る　バッファオーバーラン対策、ユーザー制限
+
+
+
+
+
+
+
+
+
+
