@@ -362,3 +362,9 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /abc.txt
+/Maps
+/.clinerules
+/AddTrain_KTK_0.txt
+/CLAUDE.md
+/Plan.md
+/RELEASE.md
