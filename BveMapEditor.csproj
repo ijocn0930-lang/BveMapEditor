@@ -26,9 +26,13 @@
 
   <ItemGroup>
     <Compile Remove="BveMapParserWorker\**" />
+    <Compile Remove="_backup\**" />
     <EmbeddedResource Remove="BveMapParserWorker\**" />
+    <EmbeddedResource Remove="_backup\**" />
     <None Remove="BveMapParserWorker\**" />
+    <None Remove="_backup\**" />
     <Page Remove="BveMapParserWorker\**" />
+    <Page Remove="_backup\**" />
   </ItemGroup>
 
   <ItemGroup>
@@ -40,6 +44,14 @@
 
   <ItemGroup>
     <None Remove="abc.txt" />
+    <None Remove="AddTrain_KTK_0.txt" />
+    <None Remove="bvecommand.txt" />
+    <None Remove="Editor01.png" />
+    <None Remove="Editor02.png" />
+    <None Remove="Editor03.png" />
+    <None Remove="map.txt" />
+    <None Remove="Plan_Archive.md" />
+    <None Remove="system_extensions_list.md" />
   </ItemGroup>
 
   <ItemGroup>
