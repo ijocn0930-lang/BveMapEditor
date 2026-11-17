@@ -21,6 +21,8 @@ namespace BveMapEditor
             // ★ まとまり4: 「同じ種類のエラーをまとめて直す」ができる候補の種類（null ならまとめて直さない）
             //    行の中だけで、ほかの行に関係なく決まる直し方だけに付ける（似た名前の候補などは1件ずつ選ぶ）
             public string? BatchKind { get; init; }
+            // ★ (2026-11-17) 文字を直す代わりに、ダイアログを開くなどの処理をする候補（「○○リストに追加…」など）。null なら今まで通り文字を直す
+            public Func<Task>? Action { get; init; }
         }
 
         /// <summary>
@@ -37,6 +39,14 @@ namespace BveMapEditor
         {
             var list = new List<ErrorFixSuggestion>();
             string msg = err.Message ?? string.Empty;
+
+            // ★ (2026-11-17) ④ Load 系・include のファイルがない → 「「○○」を作る…」（CreateMissingFile.cs）
+            if (msg.StartsWith("指定されたファイルが見つかりません", StringComparison.Ordinal)
+                || msg.StartsWith("インクルード先のファイルが見つかりません", StringComparison.Ordinal))
+            {
+                AddCreateMissingFileSuggestion(err, list);
+                return list;
+            }
 
             // ★ 段階2: 未知のコマンド → つづりの近いコマンド名（自動補完の辞書から）
             var unknown = Regex.Match(msg, @"^未知のコマンドまたは存在しない単語です: '([^']+)'");
@@ -82,6 +92,20 @@ namespace BveMapEditor
                     foreach (string good in ErrorFix.FindSimilar(bk, keys))
                     {
                         list.Add(new ErrorFixSuggestion($"キー「{bk}」を「{good}」に直す", line => ErrorFix.ReplaceKey(line, err.Column, bk, good)));
+                    }
+                }
+                // ★ (2026-11-17) リストにないキーを、そのリストに足すダイアログを開く（キーの欄にエラーのキーを入れておく。ListEntryMenu.cs）
+                //    ストラクチャー（Repeater も）・サウンド・サウンド3D・駅だけ。リストファイルの場所が分かるときだけ出す
+                if (badKey.Length > 0 && kind is "Structure" or "Sound" or "Sound3D" or "Station")
+                {
+                    string? listPath = FindListFilePath(GetKeyListForErrorFix(BveSemanticAnalyzer.ListFilesKey), kind);
+                    if (listPath != null)
+                    {
+                        string k = kind, key = badKey, lp = listPath;
+                        list.Add(new ErrorFixSuggestion($"「{key}」を{ListKindName(k)}に追加…", null)
+                        {
+                            Action = () => OpenAddListDialogForKeyAsync(k, lp, key),
+                        });
                     }
                 }
                 return list;
@@ -572,6 +596,11 @@ namespace BveMapEditor
                     menu.Items.Remove(old);
                 }
 
+                // ★ (2026-11-17) メニューの最後に「ストラクチャーを追加…」を出す（ListEntryMenu.cs。マップのタブだけ）
+                //    （ここで例外が出ても、下の「修正の候補」は出す）
+                try { AddListEntryMenuItems(menu, editor); }
+                catch (Exception ex) { App.LogOperation($"「ストラクチャーを追加」のメニューを作れませんでした: {ex.Message}"); }
+
                 // 右クリックした行（マウスの位置）。取れなければカーソルの行
                 int lineNumber = editor.TextArea.Caret.Line;
                 var pos = editor.GetPositionFromPoint(System.Windows.Input.Mouse.GetPosition(editor));
@@ -647,6 +676,12 @@ namespace BveMapEditor
         {
             try
             {
+                // ★ (2026-11-17) 文字を直さない候補（「○○リストに追加…」など）は、その処理だけをする
+                if (suggestion.Action != null)
+                {
+                    await suggestion.Action();
+                    return;
+                }
                 await OpenErrorFileAsync(err); // ダブルクリックと同じように、エラーのファイルのタブを開く
                 var editor = ActiveEditor ?? MapTextEditor;
                 var doc = editor?.Document;

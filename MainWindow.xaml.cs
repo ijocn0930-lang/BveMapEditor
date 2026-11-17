@@ -844,6 +844,8 @@ namespace BveMapEditor
             {
                 editor.MouseHover += Editor_MouseHover;
                 editor.MouseHoverStopped += Editor_MouseHoverStopped;
+                // ★ (2026-11-16) CSV のタブで列を表示だけでそろえる（最初のタブのエディタ。ほかのタブは InitializeEditor でつなぐ）
+                editor.TextArea.TextView.ElementGenerators.Add(new CsvColumnAligner(editor, IsCsvAlignActive));
             }
 
             editor?.PreviewKeyDown += (s, e) =>
@@ -1035,6 +1037,36 @@ namespace BveMapEditor
                 && !head.StartsWith("BveTs Map", StringComparison.OrdinalIgnoreCase);
         }
 
+        // ★ (2026-11-17) リストファイルの 1 行目（例: BveTs Structure List 2.00 / BveTs Signal Aspects List 2.00 / BveTs Station List 2.00）
+        private static readonly System.Text.RegularExpressions.Regex ListHeaderRegex =
+            new(@"^BveTs\s+[A-Za-z0-9 ]*?\bList\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// ★ (2026-11-17) リストファイル（CSV 形式）か: 拡張子が .csv、または 1 行目が「BveTs … List」（.txt でもよい）
+        /// CSV の列そろえ（CsvColumnAligner）はこのファイルだけに効かせる（他列車・車両・シナリオの .txt には効かせない）
+        /// </summary>
+        private static bool IsListText(string? path, string text)
+        {
+            if (!string.IsNullOrEmpty(path) && string.Equals(Path.GetExtension(path), ".csv", StringComparison.OrdinalIgnoreCase)) return true;
+            // 1 行目だけを見る（先頭の BOM・空白は飛ばす）
+            int start = 0;
+            while (start < text.Length && (text[start] == '﻿' || char.IsWhiteSpace(text[start]))) start++;
+            int end = text.IndexOfAny(new[] { '\r', '\n' }, start);
+            string firstLine = end < 0 ? text[start..] : text[start..end];
+            return ListHeaderRegex.IsMatch(firstLine);
+        }
+
+        /// <summary>
+        /// ★ (2026-11-17) そのタブがリストファイルならリスト用（BveList.xshd）、それ以外はマップ用（BveMap.xshd）の色分けを付ける
+        /// タブを切り替えたとき・ファイルを開いたとき・名前を付けて保存したときに呼ぶ
+        /// </summary>
+        private void ApplyHighlightingForEditor(ICSharpCode.AvalonEdit.TextEditor? editor)
+        {
+            if (editor == null) return;
+            string? path = FindTabByEditor(editor)?.FilePath;
+            MapHighlighter.ApplyHighlighting(editor, IsListText(path, editor.Text));
+        }
+
         private string GetRootFilePath(string? path)
         {
             string root = path ?? string.Empty;
@@ -1084,7 +1116,8 @@ namespace BveMapEditor
                 if (editor != null)
                 {
                     isInitializing = true;
-                    MapHighlighter.InitializeHighlighting(editor);
+                    // ★ (2026-11-17) リストファイルのタブはリスト用、それ以外はマップ用の色分け（以前はいつもマップ用）
+                    ApplyHighlightingForEditor(editor);
                     try { editor.TextArea.TextEntered -= MapTextEditor_TextEntered; } catch { }
                     try { editor.TextArea.TextEntering -= MapTextEditor_TextEntering; } catch { }
                     editor.TextArea.TextEntered += MapTextEditor_TextEntered;

@@ -57,6 +57,10 @@ namespace BveMapEditor
         public bool RememberCaretPosition { get; set; } = true;
         // ★ (2026-11-16) $変数 にマウスを乗せたら宣言を吹き出しで表示する（初期値はオン。古い settings.json でもオンになる）
         public bool EnableVariableHover { get; set; } = true;
+        // ★ (2026-11-16) CSV（リストファイル）のタブで、列の始まりを表示だけでそろえる（CsvColumnAligner.cs。初期値はオン）
+        public bool AlignCsvColumns { get; set; } = true;
+        // ★ (2026-11-17) エクスプローラーペインの行間: "Compact"（コンパクト。初期値）/ "Standard"（標準）/ "Wide"（広い）
+        public string ExplorerRowSpacing { get; set; } = "Compact";
         public Dictionary<string, string> PerFileEncodingMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // ★ (2026-11-15) アプリのフォルダの settings.json を使う
         //    （以前は "settings.json" だけで「今のフォルダ」に読み書きしていたため、ファイルのダイアログなどで今のフォルダが変わると、

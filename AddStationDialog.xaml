@@ -1,0 +1,117 @@
+﻿<Window x:Class="BveMapEditor.AddStationDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="駅を追加" MinWidth="500" WindowStartupLocation="CenterOwner" ResizeMode="NoResize" SizeToContent="WidthAndHeight"
+        ShowInTaskbar="False">
+    <!-- ★ (2026-11-17) ステーションリストに駅の 1 行（13 列）を足すダイアログ -->
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock x:Name="TxtListFile" Grid.ColumnSpan="3" TextWrapping="Wrap" MaxWidth="560" Margin="0,0,0,10" />
+
+        <TextBlock Grid.Row="1" Text="キー" VerticalAlignment="Center" Margin="0,4,8,4" />
+        <TextBox x:Name="TxtKey" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,4" MinWidth="300" />
+
+        <TextBlock Grid.Row="2" Text="駅名" VerticalAlignment="Center" Margin="0,4,8,4" />
+        <TextBox x:Name="TxtName" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,4" />
+
+        <TextBlock Grid.Row="3" Text="到着時刻" VerticalAlignment="Center" Margin="0,4,8,4" />
+        <ComboBox x:Name="CmbArrival" Grid.Row="3" Grid.Column="1" Margin="0,4,6,4" Width="110" SelectionChanged="CmbArrival_SelectionChanged">
+            <ComboBoxItem Content="時刻" IsSelected="True" />
+            <ComboBoxItem Content="通過（p）" />
+            <ComboBoxItem Content="空" />
+        </ComboBox>
+        <TextBox x:Name="TxtArrival" Grid.Row="3" Grid.Column="2" Margin="0,4" Width="100" HorizontalAlignment="Left" ToolTip="例: 13:21:00" LostFocus="TxtArrival_LostFocus" />
+
+        <TextBlock Grid.Row="4" Text="発車時刻" VerticalAlignment="Center" Margin="0,4,8,4" />
+        <ComboBox x:Name="CmbDeparture" Grid.Row="4" Grid.Column="1" Margin="0,4,6,4" Width="110" SelectionChanged="CmbDeparture_SelectionChanged">
+            <ComboBoxItem Content="時刻" IsSelected="True" />
+            <ComboBoxItem Content="終点（t）" />
+            <ComboBoxItem Content="空" />
+        </ComboBox>
+        <TextBox x:Name="TxtDeparture" Grid.Row="4" Grid.Column="2" Margin="0,4" Width="100" HorizontalAlignment="Left" ToolTip="例: 13:21:20" />
+
+        <TextBlock Grid.Row="5" Text="停車時間（秒）" VerticalAlignment="Center" Margin="0,4,8,4" />
+        <TextBox x:Name="TxtStop" Grid.Row="5" Grid.Column="1" Margin="0,4" Width="110" HorizontalAlignment="Left" />
+
+        <TextBlock Grid.Row="6" Text="既定の時刻" VerticalAlignment="Center" Margin="0,4,8,4" />
+        <TextBox x:Name="TxtDefault" Grid.Row="6" Grid.Column="1" Margin="0,4" Width="110" HorizontalAlignment="Left"
+                 ToolTip="駅へジャンプしたときの時刻。空のときは、到着時刻を入れると同じ時刻が入ります" />
+        <TextBlock Grid.Row="6" Grid.Column="2" Text="（駅へジャンプしたときの時刻）" VerticalAlignment="Center" Foreground="Gray" Margin="6,0,0,0" />
+
+        <!-- 「詳しく」: 残りの 7 列。初めはリストの最後の駅の行の値 -->
+        <Expander Grid.Row="7" Grid.ColumnSpan="3" Header="詳しく（出発信号・降車時間・乗車率・音・ドア）" Margin="0,8,0,0">
+            <Grid Margin="8,6,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <!-- ★ (2026-11-17) 出発信号は 0（進行）か 1（停止）だけ（ユーザーより） -->
+                <TextBlock Text="出発信号" VerticalAlignment="Center" Margin="0,3,8,3" />
+                <ComboBox x:Name="CmbSignal" Grid.Column="1" Margin="0,3" Width="140" HorizontalAlignment="Left">
+                    <ComboBoxItem Content="0（進行）" IsSelected="True" />
+                    <ComboBoxItem Content="1（停止）" />
+                </ComboBox>
+                <!-- ★ (2026-11-17) 降車時間は秒（1 = 1 秒） -->
+                <TextBlock Grid.Row="1" Text="降車時間（秒）" VerticalAlignment="Center" Margin="0,3,8,3" />
+                <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal">
+                    <TextBox x:Name="TxtAlight" Margin="0,3" Width="110" HorizontalAlignment="Left" />
+                    <TextBlock VerticalAlignment="Center" Margin="6,0,0,0" Foreground="Gray" Text="（1 = 1 秒）" />
+                </StackPanel>
+                <TextBlock Grid.Row="2" Text="乗車率" VerticalAlignment="Center" Margin="0,3,8,3" />
+                <!-- ★ (2026-11-17) 乗車率は 0〜4（1 = 100%）。入れた値を % でも出す -->
+                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal">
+                    <TextBox x:Name="TxtPassengers" Margin="0,3" Width="110" HorizontalAlignment="Left" TextChanged="TxtPassengers_TextChanged" />
+                    <TextBlock x:Name="TxtPassengersPercent" VerticalAlignment="Center" Margin="6,0,0,0" Foreground="Gray" Text="（1 = 100%。0〜4）" />
+                </StackPanel>
+                <TextBlock Grid.Row="3" Text="到着の音のキー" VerticalAlignment="Center" Margin="0,3,8,3" />
+                <ComboBox x:Name="CmbArrivalSound" Grid.Row="3" Grid.Column="1" Margin="0,3" MinWidth="220" IsEditable="True" HorizontalAlignment="Left" />
+                <TextBlock Grid.Row="4" Text="発車の音のキー" VerticalAlignment="Center" Margin="0,3,8,3" />
+                <ComboBox x:Name="CmbDepartureSound" Grid.Row="4" Grid.Column="1" Margin="0,3" MinWidth="220" IsEditable="True" HorizontalAlignment="Left" />
+                <!-- ★ (2026-11-17) ドアの再開閉は %（乗車率と同じ書き方。1 = 100%。上限なし）。駆け込みは秒（1 = 1 秒） -->
+                <TextBlock Grid.Row="5" Text="ドアの再開閉" VerticalAlignment="Center" Margin="0,3,8,3" />
+                <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal">
+                    <TextBox x:Name="TxtReopen" Margin="0,3" Width="110" HorizontalAlignment="Left" TextChanged="TxtReopen_TextChanged" />
+                    <TextBlock x:Name="TxtReopenPercent" VerticalAlignment="Center" Margin="6,0,0,0" Foreground="Gray" Text="（1 = 100%）" />
+                </StackPanel>
+                <TextBlock Grid.Row="6" Text="駆け込み（秒）" VerticalAlignment="Center" Margin="0,3,8,3" />
+                <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal">
+                    <TextBox x:Name="TxtStuck" Margin="0,3" Width="110" HorizontalAlignment="Left" />
+                    <TextBlock VerticalAlignment="Center" Margin="6,0,0,0" Foreground="Gray" Text="（1 = 1 秒）" />
+                </StackPanel>
+            </Grid>
+        </Expander>
+
+        <TextBlock x:Name="TxtTemplateNote" Grid.Row="8" Grid.ColumnSpan="3" Margin="0,8,0,10" TextWrapping="Wrap" MaxWidth="560" Foreground="Gray" />
+
+        <StackPanel Grid.Row="9" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="BtnOk" Width="88" Margin="6" IsDefault="True" Click="BtnOk_Click">追加</Button>
+            <Button x:Name="BtnCancel" Width="88" Margin="6" IsCancel="True">キャンセル</Button>
+        </StackPanel>
+    </Grid>
+</Window>

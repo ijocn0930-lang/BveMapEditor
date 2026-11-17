@@ -22,8 +22,9 @@ public partial class MainWindow : Window
             //    ・エラー残存の確認は、警告も数えるためほぼ毎回出ていた
             var openFileDialog = new OpenFileDialog
             {
-                Filter = "Map File (*.txt)|*.txt|All Files (*.*)|*.*",
-                Title = "マップファイルを開く"
+                // ★ (2026-11-17) リストファイル（.csv）も選べるようにした（以前は .txt と All Files だけ）
+                Filter = "Map File (*.txt)|*.txt|CSV File (*.csv)|*.csv|All Files (*.*)|*.*",
+                Title = "ファイルを開く"
             };
 
             if (openFileDialog.ShowDialog() == true)
@@ -306,6 +307,8 @@ public partial class MainWindow : Window
                             active.IsModified = false;
                             active.TabItem?.Header = Path.GetFileName(filePath);
                         }
+                        // ★ (2026-11-17) 今のタブに読み込んだときはタブの切り替えが起きないので、ここで色分けを選ぶ（リスト用 / マップ用）
+                        ApplyHighlightingForEditor(targetEditor);
                     }
                 }
                 catch (OutOfMemoryException)
@@ -471,6 +474,8 @@ public partial class MainWindow : Window
                     savedTabInfo.FileEncoding = encodingToUse;
                     savedTabInfo.IsModified = false; // ★ 保存した時点の本文が「元の内容」として覚えられる（TabDocumentInfo.IsModified を参照）
                     savedTabInfo.TabItem?.Header = Path.GetFileName(filePath);
+                    // ★ (2026-11-17) 名前を付けて保存で .csv ⇔ .txt が変わったときのため、色分けを選び直す
+                    ApplyHighlightingForEditor(savedTabInfo.Editor);
                 }
                 UpdateEncodingStatus();
                 UpdateTitle();

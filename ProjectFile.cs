@@ -417,6 +417,8 @@ namespace BveMapEditor
             // ★ (2026-11-16) 変数にマウスを乗せたら宣言を吹き出しで出す（AvalonEditClass.cs）
             editor.MouseHover += Editor_MouseHover;
             editor.MouseHoverStopped += Editor_MouseHoverStopped;
+            // ★ (2026-11-16) CSV のタブで列を表示だけでそろえる（CsvColumnAligner.cs。設定と、マップでないタブかどうかで効く）
+            editor.TextArea.TextView.ElementGenerators.Add(new CsvColumnAligner(editor, IsCsvAlignActive));
 
             var cm = new ContextMenu();
             cm.Items.Add(new MenuItem() { Header = "元に戻す(_U)", Command = ApplicationCommands.Undo });

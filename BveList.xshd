@@ -1,0 +1,42 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!-- ★ (2026-11-17) リストファイル（.csv、または 1 行目が BveTs … List の .txt）用の色分け
+     マップ用の BveMap.xshd とは別。どちらを使うかは MapHighlighter.cs / MainWindow.xaml.cs（IsListText）で決める
+     ルールは上に書いたものほど優先される（同じ位置で両方当てはまるときは上のもの） -->
+<SyntaxDefinition name="BveList" extensions=".csv" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+	<!-- 配色（マップ用の BveMap.xshd と同じ色をなるべく使う） -->
+	<Color name="Comment" foreground="#2E7D32" fontStyle="italic" />
+	<Color name="Header" foreground="#0067a3" fontWeight="bold" fontStyle="italic" />
+	<Color name="Key" foreground="#1A237E" fontWeight="bold" />
+	<Color name="Path" foreground="#D84315" />
+	<Color name="Number" foreground="#7B1FA2" />
+
+	<RuleSet>
+		<!-- 1. コメント（# または // から行末まで） -->
+		<Span color="Comment" begin="//|#" />
+
+		<!-- 2. 1 行目のヘッダー（BveTs Structure List 2.00 など。行の終わりまで） -->
+		<Rule color="Header">
+			^\s*BveTs\s+[A-Za-z0-9 ]*?List\b[^\r\n]*
+		</Rule>
+
+		<!-- 3. 各行の 1 列目（キー）: 行の始まりから最初のカンマの前まで -->
+		<Rule color="Key">
+			^[^,\r\n#/]+(?=,)
+		</Rule>
+
+		<!-- 4. ファイルのパス: \ や / を含む欄、またはファイルの拡張子で終わる欄 -->
+		<Rule color="Path">
+			(?&lt;=,)\s*[^,\r\n]*[\\/][^,\r\n]*|(?&lt;=,)\s*[^,\r\n]+\.(x|csv|txt|wav|ogg|mp3|png|bmp|jpg|jpeg|gif|tga|dds|mqo|mqoz)\b
+		</Rule>
+
+		<!-- 5. 時刻（15:16:00 など） -->
+		<Rule color="Number">
+			\b\d{1,2}:\d{2}(:\d{2})?\b
+		</Rule>
+
+		<!-- 6. 数字 -->
+		<Rule color="Number">
+			\b\d+(\.\d+)?\b
+		</Rule>
+	</RuleSet>
+</SyntaxDefinition>

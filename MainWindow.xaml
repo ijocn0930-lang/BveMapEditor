@@ -77,6 +77,14 @@
                     <MenuItem x:Name="MenuRememberCaret" Header="終了時のカーソル位置を記録する" IsCheckable="True" Click="MenuRememberCaret_Click" />
                     <!-- ★ (2026-11-16) $変数 にマウスを乗せたら宣言を吹き出しで表示する（SettingsMenu.cs の MenuVariableHover_Click） -->
                     <MenuItem x:Name="MenuVariableHover" Header="変数の宣言を吹き出しで表示する" IsCheckable="True" Click="MenuVariableHover_Click" />
+                    <!-- ★ (2026-11-16) CSV のタブで列を表示だけでそろえる（SettingsMenu.cs の MenuAlignCsv_Click） -->
+                    <MenuItem x:Name="MenuAlignCsv" Header="CSV の列をそろえて表示する" IsCheckable="True" Click="MenuAlignCsv_Click" />
+                    <!-- ★ (2026-11-17) エクスプローラーペインの行間（SettingsMenu.cs の ExplorerSpacingMenuItem_Click） -->
+                    <MenuItem Header="エクスプローラーペインの行間">
+                        <MenuItem x:Name="MenuExplorerSpacingCompact" Header="コンパクト" IsCheckable="True" Tag="Compact" Click="ExplorerSpacingMenuItem_Click" />
+                        <MenuItem x:Name="MenuExplorerSpacingStandard" Header="標準" IsCheckable="True" Tag="Standard" Click="ExplorerSpacingMenuItem_Click" />
+                        <MenuItem x:Name="MenuExplorerSpacingWide" Header="広い" IsCheckable="True" Tag="Wide" Click="ExplorerSpacingMenuItem_Click" />
+                    </MenuItem>
                 <Separator />
                 <MenuItem Header="テーマ(_T)">
                     <MenuItem x:Name="MenuThemeSystem" Header="システム既定(_S)" IsCheckable="True" Click="ThemeMenuItem_Click" Tag="System" />
@@ -87,8 +95,8 @@
                 <MenuItem Header="詳細設定(_D)..." Click="MenuDetailSettings_Click" />
             </MenuItem>
             <MenuItem Header="デバッグ(_D)">
-                <MenuItem Header="BVEでデバッグ実行(_R)" Click="MenuDebugRun_Click" />
-                <MenuItem Header="QuickMapViewerを実行(_R)" Click="MenuDebugRunQMV_Click" />
+                <MenuItem Header="BVEを起動(_R)" Click="MenuDebugRun_Click" />
+                <MenuItem Header="QuickMapViewerを起動(_Q)" Click="MenuDebugRunQMV_Click" />
 
             </MenuItem>
             <MenuItem Header="ヘルプ(_H)">

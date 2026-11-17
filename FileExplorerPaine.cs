@@ -31,15 +31,78 @@ namespace BveMapEditor
         private const uint SHGFI_SMALLICON = 0x000000001;
         private const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
 
+        // ★ (2026-11-17) アイコンを覚えておく（フォルダは 1 つ、ファイルは拡張子ごとに 1 つ）
+        //    以前はファイル 1 つごとに Windows に聞いていて、2 万個のフォルダで約 18 秒、画面が止まっていた（応答なし）
+        //    .exe .ico など、ファイルごとにアイコンが違うものは今まで通り 1 つずつ聞く
+        private static readonly Dictionary<string, ImageSource?> _iconCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> PerFileIconExtensions = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ".exe", ".ico", ".lnk", ".url", ".cur", ".ani", ".scr", ".appref-ms",
+        };
+
+        private const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
+        private const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+
         private static ImageSource? GetFileIcon(string filePath, bool isDirectory)
+        {
+            // ★ (2026-11-17) ドライブの直下（C:\ など）は、ドライブのアイコンなので覚えずにそのまま聞く
+            //    （以前は最初に聞いたフォルダのアイコンを全部のフォルダに使っていたため、ドライブの直下を開くと
+            //     全部のフォルダがドライブのアイコンになっていた）
+            if (isDirectory && IsDriveRoot(filePath)) return GetFileIconCore(filePath, isDirectory, generic: false);
+
+            string? cacheKey = null;
+            if (isDirectory)
+            {
+                cacheKey = "<folder>";
+            }
+            else
+            {
+                string ext = Path.GetExtension(filePath);
+                if (!PerFileIconExtensions.Contains(ext)) cacheKey = "ext:" + ext;
+            }
+            if (cacheKey != null && _iconCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+            // 覚えるものは、そのファイル・フォルダのものではなく「ふつうのフォルダ」「その拡張子のふつうのファイル」のアイコンを聞く
+            // （最初に聞いたものがたまたま特別なアイコンでも、ほかに広がらないように）
+            var icon = GetFileIconCore(filePath, isDirectory, generic: cacheKey != null);
+            if (cacheKey != null) _iconCache[cacheKey] = icon;
+            return icon;
+        }
+
+        // ドライブの直下（C:\ など）なら true
+        private static bool IsDriveRoot(string path)
+        {
+            try
+            {
+                string full = Path.GetFullPath(path);
+                string? root = Path.GetPathRoot(full);
+                return !string.IsNullOrEmpty(root)
+                    && string.Equals(Path.TrimEndingDirectorySeparator(full), Path.TrimEndingDirectorySeparator(root), StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <param name="generic">true なら、そのパスのファイル・フォルダを見ずに「ふつうのフォルダ」「その拡張子のふつうのファイル」のアイコンを聞く</param>
+        private static ImageSource? GetFileIconCore(string filePath, bool isDirectory, bool generic)
         {
             var shfi = new SHFILEINFO();
             uint flags = SHGFI_ICON | SHGFI_SMALLICON;
-            if (!isDirectory && !File.Exists(filePath))
+            uint attributes = 0;
+            string queryPath = filePath;
+            if (generic)
+            {
+                flags |= SHGFI_USEFILEATTRIBUTES;
+                attributes = isDirectory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+                queryPath = isDirectory ? "folder" : "file" + Path.GetExtension(filePath);
+            }
+            else if (!isDirectory && !File.Exists(filePath))
             {
                 flags |= SHGFI_USEFILEATTRIBUTES;
             }
-            IntPtr result = SHGetFileInfo(filePath, 0, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
+            IntPtr result = SHGetFileInfo(queryPath, attributes, ref shfi, (uint)Marshal.SizeOf(shfi), flags);
             if (shfi.hIcon != IntPtr.Zero)
             {
                 try
@@ -109,7 +172,7 @@ namespace BveMapEditor
                 ExplorerContextMenu.IsEnabled = true;
             }
         }
-        private void MenuNewTextFile_Click(object sender, RoutedEventArgs e)
+        private async void MenuNewTextFile_Click(object sender, RoutedEventArgs e)
         {
             string? path = GetSelectedPath();
             if (string.IsNullOrEmpty(path)) return;
@@ -133,16 +196,33 @@ namespace BveMapEditor
             try
             {
                 File.WriteAllText(newPath, string.Empty);
-                // FileSystemWatcher が有効なため、自動的にツリーが同期・更新されます
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"ファイルの作成に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            // ★ (2026-11-17) ファイルの見張り（FileSystemWatcher）を待たずに、すぐツリーを読み込み直して作ったファイルを選ぶ。
+            //    続けて名前の変更の窓を出す（Windows のエクスプローラーと同じ。拡張子の前までを選んだ状態。ユーザーの決定）
+            try
+            {
+                await RefreshTreeKeepingStateAsync(newPath);
+                RenameItemAtPath(newPath);
+            }
+            catch (Exception ex)
+            {
+                App.LogOperation($"新規テキストファイルの後の読み込み直し・名前の変更に失敗: {ex.Message}");
             }
         }
         private void ExplorerPaneMenuRename_Click(object sender, RoutedEventArgs e)
         {
-            string? path = GetSelectedPath();
+            RenameItemAtPath(GetSelectedPath());
+        }
+
+        // ★ (2026-11-17) 名前の変更の中身（右クリックの「名前の変更」と、新規テキストファイルを作った直後から使う）
+        private void RenameItemAtPath(string? path)
+        {
             if (string.IsNullOrEmpty(path) || path.Equals(_currentRootFolderPath, StringComparison.OrdinalIgnoreCase))
             {
                 MessageBox.Show("ルートフォルダや無効な項目は名前を変更できません。", "操作エラー", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -161,8 +241,11 @@ namespace BveMapEditor
             }
 
             // 入力ボックスを表示
-            string newName = Microsoft.VisualBasic.Interaction.InputBox("新しい名前を入力してください:", "名前の変更", currentName);
-            newName = newName.Trim(); // ★ (2026-11-15) 前後の空白は取る（Windows と同じ）
+            // ★ (2026-11-17) 名前の変更の窓（RenameDialog）にした。ファイルは拡張子の前までを選んだ状態で出し、拡張子を変えたら確認する
+            //    （以前の Visual Basic の入力ボックスは全部を選んだ状態で出るため、拡張子まで消してしまうおそれがあった）
+            string? entered = RenameDialog.Prompt(this, currentName, isDir);
+            if (entered == null) return; // やめた
+            string newName = entered.Trim(); // ★ (2026-11-15) 前後の空白は取る（Windows と同じ）
             if (string.IsNullOrWhiteSpace(newName) || newName == currentName) return;
 
             // ★ (2026-11-15) ファイル名に使えない名前は止める
@@ -493,7 +576,9 @@ namespace BveMapEditor
                     if (!directoryInfo.Exists) return null;
 
                     var rootNode = new FileSystemNode(directoryInfo.Name, directoryInfo.FullName, true);
-                    PopulateNodeRecursive(rootNode, directoryInfo);
+                    // ★ (2026-11-17) 以前は下の下まで全部読んでいた（PopulateNodeRecursive）ため、ドライブの直下などで止まっていた
+                    //    → いちばん上のフォルダの中（1 段）だけ読む。下のフォルダは、ツリーで開いたときに読む（TreeItem_Expanded）
+                    PopulateNodeOneLevel(rootNode, directoryInfo);
                     return rootNode;
                 }
                 catch (Exception)
@@ -503,7 +588,104 @@ namespace BveMapEditor
                 }
             });
         }
+        /// <summary>
+        /// ★ (2026-11-17) フォルダの中を 1 段だけ読む（下のフォルダの中は読まない。IsLoaded = false のまま）
+        /// 隠し・禁止するフォルダは出さない。ジャンクション・シンボリックリンクのフォルダは出すが、中は読まない（ぐるぐる回らないように）
+        /// </summary>
+        private static void PopulateNodeOneLevel(FileSystemNode parentNode, DirectoryInfo directoryInfo)
+        {
+            parentNode.IsLoaded = true;
+            try
+            {
+                foreach (var directory in directoryInfo.GetDirectories())
+                {
+                    if ((directory.Attributes & FileAttributes.Hidden) != 0) continue;
+                    if (IsForbiddenSystemPath(directory.FullName)) continue;
+                    var subNode = new FileSystemNode(directory.Name, directory.FullName, true);
+                    // ジャンクション・シンボリックリンクは中を読まない（読み込み済み・中は空として扱う）
+                    if ((directory.Attributes & FileAttributes.ReparsePoint) != 0) subNode.IsLoaded = true;
+                    parentNode.Children.Add(subNode);
+                }
+                foreach (var file in directoryInfo.GetFiles())
+                {
+                    if ((file.Attributes & FileAttributes.Hidden) != 0) continue;
+                    parentNode.Children.Add(new FileSystemNode(file.Name, file.FullName, false));
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+                parentNode.Children.Add(new FileSystemNode($"[アクセス拒否] {directoryInfo.Name}", directoryInfo.FullName, true) { IsLoaded = true });
+            }
+            catch (IOException)
+            {
+                // 読んでいる途中で消えた・ドライブが外されたなど。読めた所までを出す
+            }
+        }
+
+        // ★ (2026-11-17) エクスプローラーペインの行間（設定 ExplorerRowSpacing）。1 行の上下の余白: コンパクト 0・標準 2（以前の幅）・広い 5
+        private static string NormalizeExplorerSpacing(string? s) => s switch
+        {
+            "Standard" => "Standard",
+            "Wide" => "Wide",
+            _ => "Compact", // 知らない値・古い settings.json は初期値のコンパクト
+        };
+
+        private Thickness GetExplorerItemMargin()
+        {
+            double v = NormalizeExplorerSpacing(currentSettings?.ExplorerRowSpacing) switch
+            {
+                "Standard" => 2,
+                "Wide" => 5,
+                _ => 0,
+            };
+            return new Thickness(0, v, 0, v);
+        }
+
+        // 行間の設定を、今のツリーの全部の行に当てる（作り直さずに余白だけ変える）
+        private void ApplyExplorerSpacingToTree()
+        {
+            var margin = GetExplorerItemMargin();
+            void Apply(ItemsControl parent)
+            {
+                foreach (var obj in parent.Items)
+                {
+                    if (obj is not TreeViewItem item) continue;
+                    if (item.Header is StackPanel sp) sp.Margin = margin;
+                    Apply(item);
+                }
+            }
+            if (FileExplorerTreeView != null) Apply(FileExplorerTreeView);
+        }
+
+        // ★ (2026-11-17) 中を読んでいないフォルダに入れておく仮の項目（Tag は null。開いたときに本当の中身に置き換える）
+        private const string TreePlaceholderText = "読み込み中…";
+        private static bool IsTreePlaceholder(object? item) => item is TreeViewItem t && t.Tag == null && Equals(t.DataContext, TreePlaceholderText);
+
+        // フォルダの項目を開いたとき: まだ中を読んでいなければ、今読んで項目を作る
+        private void TreeItem_Expanded(object sender, RoutedEventArgs e)
+        {
+            if (!ReferenceEquals(e.OriginalSource, sender)) return; // 子の項目が開いたのが伝わってきたときは何もしない
+            if (sender is not TreeViewItem item || item.Tag is not string path) return;
+            if (item.Items.Count != 1 || !IsTreePlaceholder(item.Items[0])) return; // もう読んである
+            try
+            {
+                var node = new FileSystemNode(Path.GetFileName(path), path, true);
+                PopulateNodeOneLevel(node, new DirectoryInfo(path));
+                item.Items.Clear();
+                foreach (var child in node.Children)
+                {
+                    item.Items.Add(CreateTreeItemFromNode(child));
+                }
+            }
+            catch (Exception ex)
+            {
+                App.LogOperation($"フォルダを読めませんでした: {ex.Message}");
+                item.Items.Clear();
+            }
+        }
+
         // 再帰的にノード（データ）を構築するメソッド（バックグラウンドで実行）
+        // ★ (2026-11-17) 今は使っていない（下の下まで全部読むと、ドライブの直下などで止まるため。PopulateNodeOneLevel を使う）
         private void PopulateNodeRecursive(FileSystemNode parentNode, DirectoryInfo directoryInfo)
         {
             try
@@ -581,7 +763,7 @@ namespace BveMapEditor
             var stackPanel = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Margin = new Thickness(0, 2, 0, 2)
+                Margin = GetExplorerItemMargin() // ★ (2026-11-17) 行間の設定（コンパクト・標準・広い）に合わせる。以前はいつも上下 2
             };
 
             // 2. アイコンを取得して Image コントロールにセット
@@ -623,6 +805,12 @@ namespace BveMapEditor
             // フォルダの場合は子ノードを再帰的に追加
             if (node.IsDirectory)
             {
+                if (!node.IsLoaded)
+                {
+                    // ★ (2026-11-17) まだ中を読んでいないフォルダ: 仮の項目を入れて ▶ を出し、開いたときに読む
+                    treeItem.Items.Add(new TreeViewItem { Header = TreePlaceholderText, DataContext = TreePlaceholderText, Foreground = Brushes.Gray, IsEnabled = false });
+                    treeItem.Expanded += TreeItem_Expanded;
+                }
                 foreach (var childNode in node.Children)
                 {
                     var childItem = CreateTreeItemFromNode(childNode);
@@ -737,10 +925,11 @@ namespace BveMapEditor
                     }
 
                     // 子階層も探索
-                    if (SelectTreeViewItemByPath(treeItem, path))
+                    // ★ (2026-11-17) フォルダは開いたときに中を読むので、探すパスがこのフォルダの中のときだけ、開いて（中を読んで）から探す
+                    if (path.StartsWith(Path.TrimEndingDirectorySeparator(tagPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                     {
                         treeItem.IsExpanded = true;
-                        return true;
+                        if (SelectTreeViewItemByPath(treeItem, path)) return true;
                     }
                 }
             }
@@ -812,7 +1001,8 @@ namespace BveMapEditor
         /// ★ (2026-11-15) ツリーを作り直す。作り直す前に開いていたフォルダ・選んでいた項目・スクロール位置を覚えておき、作り直した後に戻す
         /// （ファイルの変更を見つけたときと、「再読み込み」メニューで使う）
         /// </summary>
-        private async Task RefreshTreeKeepingStateAsync()
+        /// <param name="selectPath">★ (2026-11-17) 作り直した後に選ぶ項目（null なら今選んでいる項目）。その親のフォルダは開く</param>
+        private async Task RefreshTreeKeepingStateAsync(string? selectPath = null)
         {
             if (string.IsNullOrEmpty(_currentRootFolderPath) || !Directory.Exists(_currentRootFolderPath)) return;
 
@@ -822,7 +1012,18 @@ namespace BveMapEditor
             {
                 CollectExpandedPaths(item, expanded);
             }
-            string? selected = GetSelectedPath();
+            string? selected = selectPath ?? GetSelectedPath();
+            if (selectPath != null)
+            {
+                // 選ぶ項目が見えるように、ルートからその親までのフォルダを開く
+                string? dir = Path.GetDirectoryName(selectPath);
+                while (!string.IsNullOrEmpty(dir) && IsSameOrInsideFolder(dir, _currentRootFolderPath))
+                {
+                    expanded.Add(dir);
+                    if (string.Equals(Path.TrimEndingDirectorySeparator(dir), Path.TrimEndingDirectorySeparator(_currentRootFolderPath), StringComparison.OrdinalIgnoreCase)) break;
+                    dir = Path.GetDirectoryName(dir);
+                }
+            }
             var scroller = FindTreeScrollViewer(FileExplorerTreeView);
             double scrollOffset = scroller?.VerticalOffset ?? 0;
 

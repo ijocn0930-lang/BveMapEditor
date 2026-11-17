@@ -75,6 +75,10 @@
     <None Update="BveMap.xshd">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <!-- ★ (2026-11-17) リストファイル用の色分け -->
+    <None Update="BveList.xshd">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <!-- ★ Help フォルダの HTML をまとめて出力フォルダにコピーする（HTML を足しても、ここを書き足さなくてよい） -->
     <None Update="Help\*.html">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>

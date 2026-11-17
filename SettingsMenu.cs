@@ -78,6 +78,11 @@ namespace BveMapEditor
                 editor.Background = Brushes.White;
                 editor.Foreground = Brushes.Black;
             }
+            // ★ (2026-11-16) フォントが変わったら、CSV の列の幅も計算し直す（CsvColumnAligner）
+            foreach (var aligner in editor.TextArea.TextView.ElementGenerators.OfType<CsvColumnAligner>().ToList())
+            {
+                aligner.ScheduleRecalculate();
+            }
         }
 
         // 開いている全部のタブ（と最初のエディタ）に表示の設定を当てる
@@ -268,6 +273,8 @@ namespace BveMapEditor
             MenuAllowOverwriteToggle?.IsChecked = currentSettings.AllowOverwriteToggle;
             MenuRememberCaret?.IsChecked = currentSettings.RememberCaretPosition; // ★ (2026-11-16) 終了時のカーソル位置を記録する
             MenuVariableHover?.IsChecked = currentSettings.EnableVariableHover; // ★ (2026-11-16) 変数の宣言を吹き出しで表示する
+            MenuAlignCsv?.IsChecked = currentSettings.AlignCsvColumns; // ★ (2026-11-16) CSV の列をそろえて表示する
+            UpdateExplorerSpacingMenu(); // ★ (2026-11-17) エクスプローラーペインの行間
             // ★ テーマの適用
             ApplyTheme(currentSettings.Theme);
         }
@@ -309,6 +316,60 @@ namespace BveMapEditor
                 if (!currentSettings.EnableVariableHover && _variableToolTip != null) _variableToolTip.IsOpen = false;
             }
         }
+        // ★ (2026-11-17) 「エクスプローラーペインの行間」（コンパクト・標準・広い）のクリック処理（すぐに保存し、ツリーの全部の行に当てる）
+        private void ExplorerSpacingMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem item || item.Tag is not string spacing) return;
+            currentSettings.ExplorerRowSpacing = spacing;
+            currentSettings.Save();
+            UpdateExplorerSpacingMenu();
+            ApplyExplorerSpacingToTree();
+        }
+
+        // 行間のメニューのチェックを、今の設定の 1 つだけに付ける
+        private void UpdateExplorerSpacingMenu()
+        {
+            string s = NormalizeExplorerSpacing(currentSettings?.ExplorerRowSpacing);
+            MenuExplorerSpacingCompact?.IsChecked = s == "Compact";
+            MenuExplorerSpacingStandard?.IsChecked = s == "Standard";
+            MenuExplorerSpacingWide?.IsChecked = s == "Wide";
+        }
+
+        // ★ (2026-11-16) 「CSV の列をそろえて表示する」のクリック処理（すぐに設定ファイルへ保存し、開いているタブの表示をすぐ変える）
+        private void MenuAlignCsv_Click(object sender, RoutedEventArgs e)
+        {
+            if (MenuAlignCsv == null) return;
+            currentSettings.AlignCsvColumns = MenuAlignCsv.IsChecked;
+            currentSettings.Save();
+            foreach (var editor in AllTabEditors())
+            {
+                foreach (var aligner in editor.TextArea.TextView.ElementGenerators.OfType<CsvColumnAligner>().ToList())
+                {
+                    aligner.Recalculate();
+                }
+            }
+        }
+
+        // ★ (2026-11-16) CSV の列をそろえるかどうか（設定がオンで、そのタブがリストファイルのとき）。CsvColumnAligner から呼ぶ
+        //    (2026-11-17) 以前は「マップでないファイル」全部（他列車・車両・シナリオの .txt も）だったのを、
+        //    リストファイル（.csv、または 1 行目が BveTs … List の .txt）だけにしぼった（IsListText）
+        private bool IsCsvAlignActive(ICSharpCode.AvalonEdit.TextEditor editor)
+        {
+            if (!currentSettings.AlignCsvColumns) return false;
+            string? path = FindTabByEditor(editor)?.FilePath;
+            return IsListText(path, editor.Text);
+        }
+
+        // ★ (2026-11-16) 開いている全部のタブのエディタ
+        private IEnumerable<ICSharpCode.AvalonEdit.TextEditor> AllTabEditors()
+        {
+            if (EditorTabControl == null) yield break;
+            foreach (var item in EditorTabControl.Items)
+            {
+                if (item is TabItem ti && ti.Content is ICSharpCode.AvalonEdit.TextEditor te) yield return te;
+            }
+        }
+
         private void MenuAutoCompletion_Click(object sender, RoutedEventArgs e)
         {
             if (MenuAutoCompletion != null)
