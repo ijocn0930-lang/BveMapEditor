@@ -12,6 +12,8 @@ namespace BveMapEditor
         public AboutWindow()
         {
             InitializeComponent();
+            // ★ (2026-11-19) バージョンは BveMapEditor.csproj の Version から出す（以前は窓に文字で直接書いていた）
+            TxtVersion.Text = $"バージョン: {MainWindow.GetAppVersionText()}";
         }
     
     private void Hyperlink_RequestNavigate(object sender, RequestNavigateEventArgs e)

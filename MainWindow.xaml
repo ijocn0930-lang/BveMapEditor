@@ -5,6 +5,15 @@
         Title="BVE Map Editor" Height="600" Width="1050"
         MinWidth="600" MinHeight="400"
         Closing="OnClosing">
+    <Window.Resources>
+        <!-- ★ (2026-11-19) エラー一覧のメッセージ・ファイル名の欄: 入りきらない文字の最後を「…」にし、全文を吹き出しにする
+             （吹き出しを出すかは MainWindow.xaml.cs の ErrorCell_ToolTipOpening で決める。入りきっていれば出さない） -->
+        <Style x:Key="ErrorListTrimmedCellStyle" TargetType="TextBlock" BasedOn="{x:Static DataGridTextColumn.DefaultElementStyle}">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+            <EventSetter Event="ToolTipOpening" Handler="ErrorCell_ToolTipOpening" />
+        </Style>
+    </Window.Resources>
     <!-- キーボードショートカット用のコマンドバインディング -->
     <Window.CommandBindings>
         <CommandBinding Command="ApplicationCommands.New" Executed="MenuNew_Click" />
@@ -85,6 +94,10 @@
                         <MenuItem x:Name="MenuExplorerSpacingStandard" Header="標準" IsCheckable="True" Tag="Standard" Click="ExplorerSpacingMenuItem_Click" />
                         <MenuItem x:Name="MenuExplorerSpacingWide" Header="広い" IsCheckable="True" Tag="Wide" Click="ExplorerSpacingMenuItem_Click" />
                     </MenuItem>
+                    <!-- ★ (2026-11-19) エラー一覧の右クリックで「表示しない」にした種類を表示に戻す（中身は開いたときに HiddenMessages.cs で作る） -->
+                    <MenuItem Header="表示しない警告" SubmenuOpened="MenuHiddenMessages_SubmenuOpened">
+                        <MenuItem Header="（表示しないものはありません）" IsEnabled="False" />
+                    </MenuItem>
                 <Separator />
                 <MenuItem Header="テーマ(_T)">
                     <MenuItem x:Name="MenuThemeSystem" Header="システム既定(_S)" IsCheckable="True" Click="ThemeMenuItem_Click" Tag="System" />
@@ -104,6 +117,8 @@
                 <MenuItem Header="BVE 公開ガイドライン" Click="MenuBveSiteGuide_Click" />
                 <MenuItem Header="BVE ファイル書式" Click="MenuBveformat_Click" />
                 <Separator />
+                <!-- ★ (2026-11-19) GitHub の Releases の最新版と比べる（UpdateCheck.cs） -->
+                <MenuItem Header="アップデートを確認(_U)..." Click="MenuCheckUpdate_Click" />
                 <MenuItem Header="バージョン情報(_A)..." Click="MenuAbout_Click" />
             </MenuItem>
         </Menu>
@@ -146,6 +161,7 @@
                             <MenuItem Header="エクスプローラーで開く" Click="MenuOpenInExplorer_Click"/>
                             <Separator/>
                             <MenuItem Header="新規テキストファイル (*.txt)" Click="MenuNewTextFile_Click"/>
+                            <MenuItem Header="新しいフォルダー" Click="MenuNewFolder_Click"/>
                             <MenuItem Header="名前の変更" Click="ExplorerPaneMenuRename_Click"/>
                             <Separator/>
                             <MenuItem Header="コピー" Click="ExplorerPaneMenuCopy_Click"/>
@@ -246,6 +262,9 @@
                             <!-- ★ (2026-11-16) エラー一覧の全部の行をタブ区切りでコピー（Excel・メモ帳に貼れる） -->
                             <MenuItem Header="すべてコピー" Click="ErrorMenuCopyAll_Click" />
                             <Separator />
+                            <!-- ★ (2026-11-19) 決まった種類の警告・情報を表示しない（HiddenMessages.cs。元に戻すのは「設定」➔「表示しない警告」） -->
+                            <MenuItem x:Name="MenuErrorHideKind" Header="この種類を表示しない" Click="ErrorMenuHideKind_Click" />
+                            <Separator />
                             <MenuItem x:Name="MenuErrorSelectInTree" Header="ファイルツリーでこのファイルを選択" Click="ErrorMenuSelectInTree_Click" />
                             <MenuItem x:Name="MenuErrorOpenInExplorer" Header="エクスプローラーでファイルを表示" Click="ErrorMenuOpenInExplorer_Click" />
                             <Separator />
@@ -257,8 +276,10 @@
                         <DataGridTextColumn Header="レベル" Binding="{Binding Level}" Width="40" />
                         <DataGridTextColumn Header="行" Binding="{Binding Line}" Width="60" />
                         <DataGridTextColumn Header="列" Binding="{Binding Column}" Width="60" />
-                        <DataGridTextColumn Header="メッセージ" Binding="{Binding Message}" Width="*" />
-                        <DataGridTextColumn Header="ファイル名" Binding="{Binding FileName}" Width="*" />
+                        <!-- ★ (2026-11-19) メッセージとファイル名は、入りきらない文字の最後を「…」にし、マウスを乗せると全文を吹き出しで出す
+                             （入りきっているときは出さない。MainWindow.xaml.cs の ErrorCell_ToolTipOpening） -->
+                        <DataGridTextColumn Header="メッセージ" Binding="{Binding Message}" Width="*" ElementStyle="{StaticResource ErrorListTrimmedCellStyle}" />
+                        <DataGridTextColumn Header="ファイル名" Binding="{Binding FileName}" Width="*" ElementStyle="{StaticResource ErrorListTrimmedCellStyle}" />
                     </DataGrid.Columns>
                 </DataGrid>
             </Grid>

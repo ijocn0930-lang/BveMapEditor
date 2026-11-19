@@ -30,8 +30,8 @@
         <ul>
             <li><b>'BeginTransition' is required before 'Begin' / 'End'</b> … Curve・Gradient・Track['…'].Cant の Begin / End の前に、緩和区間の始まり BeginTransition がありません。BeginTransition の距離程から Begin（End）の距離程までが緩和区間になります。</li>
             <li><b>BeginTransition(); を2か所連続して配置できません</b> … BeginTransition の後に Begin / End がないまま、もう一度 BeginTransition を書いています。</li>
-            <li><b>Curve.SetGauge が設定される前にカント付きの Curve 操作が行われています</b> … カントを付ける前に、軌間を Curve.SetGauge（または Curve.Gauge）で設定してください。</li>
-            <li><b>Track['X'].Cant.SetGauge(); が設定される前にカント操作が行われています</b> … 他軌道のカントの前に、Track['X'].Cant.SetGauge（または Track['X'].Gauge）で軌間を設定してください。</li>
+            <li><b>Curve.SetGauge が設定される前にカント付きの Curve 操作が行われています</b>（警告） … 軌間がないとカントを角度に換算できないため、BVE ではエラーにならず、そのカントは 0 と同じ扱いになります（効きません）。カントを付ける前に、軌間を Curve.SetGauge（または Curve.Gauge）で設定してください。順番は距離程の順で調べます。</li>
+            <li><b>Track['X'].Cant.SetGauge(); が設定される前に、0 でないカントが設定されています</b>（警告） … 軌間がないと、そのカントは 0 と同じ扱いになります（効きません）。他軌道に 0 でないカントを付ける前に、Track['X'].Cant.SetGauge（または Track['X'].Gauge）で軌間を設定してください。カント 0 や Cant.SetFunction・Cant.End などは、軌間がなくても出ません。</li>
         </ul>
     </div>
 

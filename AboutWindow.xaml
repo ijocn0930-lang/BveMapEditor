@@ -16,12 +16,13 @@ Title="バージョン情報" Height="230" Width="380"
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         <TextBlock Text="Bve Map Editor" FontSize="18" FontWeight="Bold" Margin="0,0,0,6"/>
-        <TextBlock x:Name="TxtVersion" Grid.Row="1" Text="バージョン: 1.0.0" Margin="0,0,0,4"/>
+        <!-- ★ (2026-11-19) バージョンは BveMapEditor.csproj の Version から出す（AboutWindow.xaml.cs） -->
+        <TextBlock x:Name="TxtVersion" Grid.Row="1" Text="バージョン: " Margin="0,0,0,4"/>
         <TextBlock Grid.Row="2" Text="制作者: テツドウ" Margin="0,0,0,4"/>
         <TextBlock Grid.Row="3" Text="テキストエディタ: AvalonEdit を使用しています。" Margin="0,0,0,8" TextWrapping="Wrap"/>
         <!-- ★ 追加：Bve Map Editor 自体のリポジトリ/ホームページへのリンク -->
-        <TextBlock Grid.Row="4" Margin="0,0,0,6">
-            <Hyperlink RequestNavigate="Hyperlink_RequestNavigate" NavigateUri="https://github.com/ijocn0930-lang/BveMapEditorr">
+        <TextBlock Grid.Row="4" Margin="0,0,0,15">
+            <Hyperlink RequestNavigate="Hyperlink_RequestNavigate" NavigateUri="https://github.com/ijocn0930-lang/BveMapEditor">
                 Bve Map Editor (GitHub)
             </Hyperlink>
         </TextBlock>

@@ -529,15 +529,33 @@ namespace BveMapEditor
                 }
                 else
                 {
-                    foreach (var row in list)
+                    // ★ (2026-11-19) マウスを乗せた場所で使われる宣言を 1 つだけ出す（その場所より前で、いちばん近い宣言。ユーザーの決定 (a)）
+                    //    （以前は同じ名前の宣言を全部並べていた。同じ変数のもう一度の宣言の警告はやめたので、どの値が使われるかをここで見せる）
+                    string? tabPath = FindTabByEditor(editor)?.FilePath;
+                    bool isRootTab = string.IsNullOrEmpty(tabPath) || string.IsNullOrEmpty(rootPath) ||
+                                     string.Equals(Path.GetFullPath(tabPath), Path.GetFullPath(rootPath), StringComparison.OrdinalIgnoreCase);
+                    string hoverFile = isRootTab ? "" : Path.GetFullPath(tabPath!);
+                    var decl = FindVariableDeclarationBefore(list, name, hoverFile, pos.Value.Line);
+                    if (decl != null)
                     {
-                        var parts = row.Split('\t');
-                        if (parts.Length < 4 || !string.Equals(parts[0], name, StringComparison.OrdinalIgnoreCase)) continue;
-                        string file = string.IsNullOrEmpty(parts[1]) ? rootName : Path.GetFileName(parts[1]);
-                        lines.Add($"{parts[0]} = {parts[3]}　（{file} の {parts[2]} 行目）");
+                        string file = string.IsNullOrEmpty(decl[1]) ? rootName : Path.GetFileName(decl[1]);
+                        lines.Add($"{decl[0]} = {decl[3]}　（{file} の {decl[2]} 行目）");
                     }
-                    if (lines.Count == 0) lines.Add($"{name}: 宣言が見つかりません（{name} = 値; と書くと宣言できます）。");
-                    else if (lines.Count > 1) lines.Add("※ 何回か宣言されています。BVE では後の宣言の値が使われます。");
+                    else
+                    {
+                        // この場所より前に宣言がない: ほかの場所の宣言があれば、それも知らせる
+                        var later = list.Select(r => r.Split('\t'))
+                                        .FirstOrDefault(p => p.Length >= 4 && string.Equals(p[0], name, StringComparison.OrdinalIgnoreCase));
+                        if (later != null)
+                        {
+                            string file = string.IsNullOrEmpty(later[1]) ? rootName : Path.GetFileName(later[1]);
+                            lines.Add($"{name}: この場所より前で宣言されていません（{file} の {later[2]} 行目で宣言されています）。");
+                        }
+                        else
+                        {
+                            lines.Add($"{name}: 宣言が見つかりません（{name} = 値; と書くと宣言できます）。");
+                        }
+                    }
                 }
 
                 _variableToolTip ??= new System.Windows.Controls.ToolTip { Placement = System.Windows.Controls.Primitives.PlacementMode.Mouse };
@@ -551,6 +569,52 @@ namespace BveMapEditor
             {
                 // 吹き出しが出せなくても編集には影響しない
             }
+        }
+
+        /// <summary>
+        /// ★ (2026-11-19) 変数の宣言の一覧（ワーカーが読んだ順。include 先の始まり #INC・終わり #END の印入り）から、
+        ///    hoverFile（ルートは ""）の hoverLine 行の場所より前で、いちばん近い name の宣言を返す（「名前・ファイル・行・右辺」。なければ null）。
+        ///    その場所より前に宣言がなく、同じ行に宣言があればそれを返す（宣言の行そのものに乗せたとき）
+        /// </summary>
+        internal static string[]? FindVariableDeclarationBefore(IReadOnlyList<string> list, string name, string hoverFile, int hoverLine)
+        {
+            bool SameFile(string f) => string.Equals(f, hoverFile, StringComparison.OrdinalIgnoreCase);
+            var rows = new List<string[]>(list.Count);
+            foreach (var r in list)
+            {
+                var p = r.Split('\t');
+                if (p.Length >= 4) rows.Add(p);
+            }
+
+            // マウスを乗せた場所が、読んだ順のどこにあたるか（その場所より後ろの最初の項目の位置）
+            int stop = rows.Count;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var p = rows[i];
+                int.TryParse(p[2], out int ln);
+                if (p[0] == BveMapParserWorker.BveSemanticAnalyzer.IncludeEndMarker)
+                {
+                    if (SameFile(p[1])) { stop = i; break; } // その include 先が終わった（乗せた行はその中の、最後の項目より後ろ）
+                    continue;
+                }
+                if (SameFile(p[1]) && ln >= hoverLine) { stop = i; break; } // 同じファイルで、乗せた行と同じか後ろの宣言・include
+            }
+
+            string[]? sameLine = null;
+            for (int i = stop - 1; i >= 0; i--)
+            {
+                var p = rows[i];
+                if (string.Equals(p[0], name, StringComparison.OrdinalIgnoreCase)) return p;
+            }
+            foreach (var p in rows)
+            {
+                if (string.Equals(p[0], name, StringComparison.OrdinalIgnoreCase) && SameFile(p[1]) && int.TryParse(p[2], out int ln) && ln == hoverLine)
+                {
+                    sameLine = p;
+                    break;
+                }
+            }
+            return sameLine;
         }
 
         private void Editor_MouseHoverStopped(object sender, System.Windows.Input.MouseEventArgs e)

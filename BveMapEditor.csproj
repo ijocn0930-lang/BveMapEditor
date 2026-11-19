@@ -11,6 +11,9 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>Properties\app.ico</ApplicationIcon>
+    <!-- ★ (2026-11-19) アプリのバージョンはここ 1 か所だけ（ファイルのバージョン・「バージョン情報」の窓・「アップデートを確認」で使う）。
+         GitHub の Releases のタグも同じ書き方（例: 1.1.0）にする -->
+    <Version>1.2.0</Version>
   </PropertyGroup>
 
   <!-- ★ (2026-11-16) デバッグシンボル（.pdb）: Debug は作る（デバッグ・クラッシュログの行番号のため）。

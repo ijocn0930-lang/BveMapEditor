@@ -215,6 +215,47 @@ namespace BveMapEditor
                 App.LogOperation($"新規テキストファイルの後の読み込み直し・名前の変更に失敗: {ex.Message}");
             }
         }
+
+        // ★ (2026-11-18) 新しいフォルダーを作る（新規テキストファイルと同じ流れ。作ったらすぐ表示して、続けて名前の変更の窓を出す）
+        private async void MenuNewFolder_Click(object sender, RoutedEventArgs e)
+        {
+            string? path = GetSelectedPath();
+            if (string.IsNullOrEmpty(path)) return;
+
+            // 選択されているのがファイルならその親フォルダ、フォルダならその中に作る
+            string targetDir = Directory.Exists(path) ? path : (Path.GetDirectoryName(path) ?? _currentRootFolderPath);
+            if (string.IsNullOrEmpty(targetDir)) return;
+
+            // 重複しない名前を決める（例: 新しいフォルダー, 新しいフォルダー (2)。同じ名前のファイルがあっても避ける）
+            string baseName = "新しいフォルダー";
+            string newPath = Path.Combine(targetDir, baseName);
+            int count = 2;
+            while (Directory.Exists(newPath) || File.Exists(newPath))
+            {
+                newPath = Path.Combine(targetDir, $"{baseName} ({count})");
+                count++;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(newPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"フォルダーの作成に失敗しました:\n{ex.Message}", "エラー", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            try
+            {
+                await RefreshTreeKeepingStateAsync(newPath);
+                RenameItemAtPath(newPath);
+            }
+            catch (Exception ex)
+            {
+                App.LogOperation($"新しいフォルダーの後の読み込み直し・名前の変更に失敗: {ex.Message}");
+            }
+        }
         private void ExplorerPaneMenuRename_Click(object sender, RoutedEventArgs e)
         {
             RenameItemAtPath(GetSelectedPath());

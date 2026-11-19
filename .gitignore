@@ -370,3 +370,15 @@ FodyWeavers.xsd
 /RELEASE.md
 /explorerPainetest
 /_backup/2026-11-16
+# ★ (2026-11-19) インストーラーの出力（setup.exe。大きいのでリポジトリに入れない）
+Installer/Output/
+/Installer
+/_backup/2026-11-18
+/Editor05.png
+/Editor06.png
+/Editor08.png
+/Editor07.png
+/Editor09.png
+/BVE601.png
+/Editor04.png
+/Plan_Archive.md

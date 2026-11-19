@@ -61,6 +61,9 @@ namespace BveMapEditor
         public bool AlignCsvColumns { get; set; } = true;
         // ★ (2026-11-17) エクスプローラーペインの行間: "Compact"（コンパクト。初期値）/ "Standard"（標準）/ "Wide"（広い）
         public string ExplorerRowSpacing { get; set; } = "Compact";
+        // ★ (2026-11-19) エラー一覧の右クリック「この種類を表示しない」で隠した警告・情報の種類（HiddenMessages.cs の HideableMessageKinds の Id）
+        //    古い settings.json にはこの項目がないが、そのときは空（全部表示）
+        public List<string> HiddenMessageKinds { get; set; } = new List<string>();
         public Dictionary<string, string> PerFileEncodingMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // ★ (2026-11-15) アプリのフォルダの settings.json を使う
         //    （以前は "settings.json" だけで「今のフォルダ」に読み書きしていたため、ファイルのダイアログなどで今のフォルダが変わると、

@@ -1549,6 +1549,33 @@ namespace BveMapEditor
         /// <summary>
         /// ErrorListDataGridの右クリックメニューが開かれる直前のイベント
         /// </summary>
+        // ★ (2026-11-19) エラー一覧のメッセージ・ファイル名の欄の吹き出し: 文字が欄に入りきらないときだけ出す（入りきっていれば出さない）
+        private void ErrorCell_ToolTipOpening(object sender, ToolTipEventArgs e)
+        {
+            if (sender is not TextBlock tb || string.IsNullOrEmpty(tb.Text) || !IsTextTrimmed(tb))
+            {
+                e.Handled = true; // 吹き出しを出さない
+            }
+        }
+
+        // TextBlock の文字が、欄の幅に入りきらず「…」で切れているか
+        private static bool IsTextTrimmed(TextBlock tb)
+        {
+            try
+            {
+                var typeface = new System.Windows.Media.Typeface(tb.FontFamily, tb.FontStyle, tb.FontWeight, tb.FontStretch);
+                var formatted = new System.Windows.Media.FormattedText(
+                    tb.Text, System.Globalization.CultureInfo.CurrentUICulture, tb.FlowDirection, typeface, tb.FontSize,
+                    System.Windows.Media.Brushes.Black, System.Windows.Media.VisualTreeHelper.GetDpi(tb).PixelsPerDip);
+                double available = tb.ActualWidth - tb.Padding.Left - tb.Padding.Right;
+                return formatted.WidthIncludingTrailingWhitespace > available + 0.5;
+            }
+            catch
+            {
+                return true; // 測れないときは出す
+            }
+        }
+
         private void ErrorListDataGrid_ContextMenuOpening(object sender, System.Windows.Controls.ContextMenuEventArgs e)
         {
             // 行が選択されていない場合はメニューを表示しない
@@ -1582,6 +1609,8 @@ namespace BveMapEditor
 
                 // ★ 修正の候補をこのエラーに合わせて作り直す（ErrorFix.cs）
                 FillErrorFixMenu(item);
+                // ★ (2026-11-19) 「この種類を表示しない」を押せるか（HiddenMessages.cs）
+                UpdateHideKindMenu(item);
             }
         }
         private void UpdateEncodingStatus()
@@ -1900,7 +1929,8 @@ namespace BveMapEditor
                         await Dispatcher.InvokeAsync(() => _keyListsByRoute[routeFilePath ?? string.Empty] = keyLists);
                     }
 
-                    List<ParseError> allErrors = response.Errors;
+                    // ★ (2026-11-19) 「この種類を表示しない」にした警告・情報は、エラー一覧と波線に出さない（HiddenMessages.cs）
+                    List<ParseError> allErrors = FilterHiddenMessages(response.Errors);
 
                     await Dispatcher.InvokeAsync(() =>
                     {
